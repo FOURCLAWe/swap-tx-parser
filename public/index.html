@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Swap Tx Parser</title>
-    <link rel="stylesheet" href="./styles.css?v=4" />
+    <link rel="stylesheet" href="./styles.css?v=5" />
   </head>
   <body>
     <main class="shell">
@@ -17,60 +17,92 @@
       </header>
 
       <section class="workspace">
-        <form class="panel form-panel" id="analyze-form">
-          <div class="segmented" role="radiogroup" aria-label="交易类型">
-            <label>
-              <input type="radio" name="tradeType" value="buy" checked />
-              <span>买入</span>
+        <aside class="left-stack">
+          <form class="panel form-panel" id="analyze-form">
+            <div class="segmented" role="radiogroup" aria-label="交易类型">
+              <label>
+                <input type="radio" name="tradeType" value="buy" checked />
+                <span>买入</span>
+              </label>
+              <label>
+                <input type="radio" name="tradeType" value="sell" />
+                <span>卖出</span>
+              </label>
+            </div>
+
+            <label class="field">
+              <span id="tx-label">成功买入 tx</span>
+              <input
+                id="tx-hash"
+                name="txHash"
+                autocomplete="off"
+                spellcheck="false"
+                placeholder="0x..."
+                required
+              />
             </label>
-            <label>
-              <input type="radio" name="tradeType" value="sell" />
-              <span>卖出</span>
+
+            <label class="field">
+              <span>你的钱包地址</span>
+              <input
+                id="buyer-address"
+                name="buyerAddress"
+                autocomplete="off"
+                spellcheck="false"
+                placeholder="0x..."
+              />
             </label>
-          </div>
 
-          <label class="field">
-            <span id="tx-label">成功买入 tx</span>
-            <input
-              id="tx-hash"
-              name="txHash"
-              autocomplete="off"
-              spellcheck="false"
-              placeholder="0x..."
-              required
-            />
-          </label>
+            <label class="field">
+              <span id="amount-label">买入 ETH 数量</span>
+              <input id="trade-amount" name="tradeAmount" inputmode="decimal" placeholder="0.05" />
+            </label>
 
-          <label class="field">
-            <span>你的钱包地址</span>
-            <input
-              id="buyer-address"
-              name="buyerAddress"
-              autocomplete="off"
-              spellcheck="false"
-              placeholder="0x..."
-            />
-          </label>
+            <label class="field">
+              <span>滑点 %</span>
+              <input id="slippage-percent" name="slippagePercent" inputmode="decimal" value="30" placeholder="30" />
+            </label>
 
-          <label class="field">
-            <span id="amount-label">买入 ETH 数量</span>
-            <input id="trade-amount" name="tradeAmount" inputmode="decimal" placeholder="0.05" />
-          </label>
+            <label class="switch-row">
+              <input id="force-min-out-zero" name="forceMinOutZero" type="checkbox" />
+              <span>强制成交</span>
+            </label>
 
-          <label class="field">
-            <span>滑点 %</span>
-            <input id="slippage-percent" name="slippagePercent" inputmode="decimal" value="30" placeholder="30" />
-          </label>
+            <button class="primary-btn" type="submit">解析并生成</button>
+            <p class="form-status" id="form-status">准备好了，粘完整 tx 后点按钮。</p>
+            <p class="mini-note" id="mode-note">只生成参数，不发送交易。未知路由先小额试单。</p>
+          </form>
 
-          <label class="switch-row">
-            <input id="force-min-out-zero" name="forceMinOutZero" type="checkbox" />
-            <span>强制成交</span>
-          </label>
+          <section class="panel sender-panel" id="hex-sender">
+            <div class="sender-head">
+              <div>
+                <p class="eyebrow">Wallet sender</p>
+                <h2>十六进制发送器</h2>
+              </div>
+              <button class="ghost-btn" id="connect-wallet" type="button">连接</button>
+            </div>
 
-          <button class="primary-btn" type="submit">解析并生成</button>
-          <p class="form-status" id="form-status">准备好了，粘完整 tx 后点按钮。</p>
-          <p class="mini-note" id="mode-note">只生成参数，不发送交易。未知路由先小额试单。</p>
-        </form>
+            <p class="wallet-line" id="wallet-state">未连接钱包</p>
+
+            <label class="field">
+              <span>To</span>
+              <input id="send-to" autocomplete="off" spellcheck="false" placeholder="0x..." />
+            </label>
+
+            <label class="field">
+              <span>Value ETH</span>
+              <input id="send-value" inputmode="decimal" placeholder="0" />
+            </label>
+
+            <label class="field">
+              <span>Data</span>
+              <textarea id="send-data" spellcheck="false" placeholder="0x"></textarea>
+            </label>
+
+            <button class="primary-btn danger-btn" id="send-transaction" type="button">发送交易</button>
+            <p class="form-status" id="sender-status">钱包会弹窗确认，本站不会保存私钥。</p>
+          </section>
+        </aside>
 
         <section class="panel result-panel" aria-live="polite">
           <div id="empty-state" class="empty-state">
@@ -98,6 +130,6 @@
       </div>
     </template>
 
-    <script src="./app.js?v=4" type="module"></script>
+    <script src="./app.js?v=5" type="module"></script>
   </body>
 </html>

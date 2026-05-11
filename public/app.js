@@ -10,6 +10,13 @@ const amountLabel = document.querySelector("#amount-label");
 const tradeAmountInput = document.querySelector("#trade-amount");
 const modeNote = document.querySelector("#mode-note");
 const emptyCopy = document.querySelector("#empty-copy");
+const connectWalletButton = document.querySelector("#connect-wallet");
+const walletStateEl = document.querySelector("#wallet-state");
+const sendToInput = document.querySelector("#send-to");
+const sendValueInput = document.querySelector("#send-value");
+const sendDataInput = document.querySelector("#send-data");
+const sendTransactionButton = document.querySelector("#send-transaction");
+const senderStatus = document.querySelector("#sender-status");
 
 const txRegex = /0x[a-fA-F0-9]{64}/;
 const addressRegex = /0x[a-fA-F0-9]{40}/;
@@ -38,6 +45,7 @@ const knownMethods = {
   "0xb2703a63": "V4 hook/router token sell",
   "0x08c1284c": "Aggregator packed sell"
 };
+let connectedAccount = "";
 
 function extractTxHash(value) {
   const match = String(value || "").match(txRegex);
@@ -54,6 +62,11 @@ function extractAddress(value) {
 function setFormStatus(message, state = "") {
   formStatus.textContent = message;
   formStatus.className = `form-status ${state}`.trim();
+}
+
+function setSenderStatus(message, state = "") {
+  senderStatus.textContent = message;
+  senderStatus.className = `form-status ${state}`.trim();
 }
 
 function setView(view) {
@@ -81,6 +94,80 @@ function updateModeCopy() {
   setFormStatus(isSell ? "准备好了，粘完整卖出 tx 后点按钮。" : "准备好了，粘完整买入 tx 后点按钮。");
   setView("empty");
   resultEl.innerHTML = "";
+}
+
+function getProvider() {
+  return window.ethereum || null;
+}
+
+function updateWalletState(account, chainId = "") {
+  connectedAccount = account ? normalizeAddress(account) : "";
+  if (!connectedAccount) {
+    walletStateEl.textContent = "未连接钱包";
+    connectWalletButton.textContent = "连接";
+    return;
+  }
+  walletStateEl.textContent = `${shortAddress(connectedAccount)} / ${chainId === "0x1" ? "Ethereum" : chainId || "未知网络"}`;
+  connectWalletButton.textContent = "已连接";
+  const walletInput = document.querySelector("#buyer-address");
+  if (walletInput && !walletInput.value.trim()) walletInput.value = connectedAccount;
+}
+
+async function switchToMainnet(provider) {
+  const chainId = await provider.request({ method: "eth_chainId" });
+  if (chainId === "0x1") return chainId;
+  await provider.request({
+    method: "wallet_switchEthereumChain",
+    params: [{ chainId: "0x1" }]
+  });
+  return "0x1";
+}
+
+async function connectWallet() {
+  const provider = getProvider();
+  if (!provider) {
+    setSenderStatus("没有检测到浏览器钱包，请安装或打开 OKX Wallet / MetaMask。", "error");
+    return "";
+  }
+
+  connectWalletButton.disabled = true;
+  connectWalletButton.textContent = "连接中";
+  try {
+    const accounts = await provider.request({ method: "eth_requestAccounts" });
+    const chainId = await switchToMainnet(provider);
+    const account = accounts?.[0] || "";
+    updateWalletState(account, chainId);
+    setSenderStatus("钱包已连接，发送前会弹出钱包确认。", "ok");
+    return account;
+  } catch (err) {
+    setSenderStatus(err instanceof Error ? err.message : String(err), "error");
+    return "";
+  } finally {
+    connectWalletButton.disabled = false;
+    if (!connectedAccount) connectWalletButton.textContent = "连接";
+  }
+}
+
+function normalizeTxData(value) {
+  const clean = strip0x(String(value || "").trim());
+  if (!clean) return "0x";
+  if (!/^[a-fA-F0-9]+$/.test(clean)) throw new Error("Data 必须是 0x 开头的十六进制");
+  if (clean.length % 2 !== 0) throw new Error("Data 十六进制长度必须是偶数");
+  return `0x${clean.toLowerCase()}`;
+}
+
+function decimalEthToHex(value) {
+  const wei = parseDecimalToUnits(String(value || "0").trim() || "0", 18) ?? 0n;
+  return `0x${wei.toString(16)}`;
+}
+
+function fillSender(txPayload, label = "交易") {
+  sendToInput.value = txPayload.to || "";
+  sendValueInput.value = txPayload.valueEth || "0";
+  sendDataInput.value = txPayload.data || "0x";
+  setSenderStatus(`${label} 已填入发送器，检查后点击发送交易。`, "ok");
+  document.querySelector("#hex-sender")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  sendToInput.focus();
 }
 
 function showLoading(isLoading) {
@@ -816,12 +903,23 @@ function createCopyRow(label, value, tall = false) {
   return node;
 }
 
-function createCopyGroup(title, rows) {
+function createCopyGroup(title, rows, txPayload = null) {
   const group = document.createElement("div");
   group.className = "copy-group";
-  const heading = document.createElement("p");
-  heading.className = "copy-group-title";
-  heading.textContent = title;
+  const heading = document.createElement("div");
+  heading.className = "copy-heading";
+  const titleEl = document.createElement("p");
+  titleEl.className = "copy-group-title";
+  titleEl.textContent = title;
+  heading.append(titleEl);
+  if (txPayload) {
+    const loadButton = document.createElement("button");
+    loadButton.className = "load-btn";
+    loadButton.type = "button";
+    loadButton.textContent = "填入发送器";
+    loadButton.addEventListener("click", () => fillSender(txPayload, title));
+    heading.append(loadButton);
+  }
   group.append(heading);
   for (const row of rows) {
     group.append(createCopyRow(row.label, row.value, row.tall));
@@ -912,7 +1010,7 @@ function renderResult(data) {
           { label: "Value ETH", value: data.generated.approve.valueEth },
           { label: "Value Wei", value: data.generated.approve.valueWei },
           { label: "Data", value: data.generated.approve.data, tall: true }
-        ])
+        ], data.generated.approve)
       );
     }
 
@@ -922,7 +1020,7 @@ function renderResult(data) {
         { label: "Value ETH", value: data.generated.valueEth },
         { label: "Value Wei", value: data.generated.valueWei },
         { label: "Data", value: data.generated.data, tall: true }
-      ])
+      ], data.generated)
     );
     resultEl.append(createSection("生成交易", generatedWrap));
 
@@ -1000,6 +1098,66 @@ form.addEventListener("submit", async (event) => {
     renderError("请求失败", err instanceof Error ? err.message : String(err));
   }
 });
+
+connectWalletButton.addEventListener("click", () => {
+  connectWallet();
+});
+
+sendTransactionButton.addEventListener("click", async () => {
+  const provider = getProvider();
+  if (!provider) {
+    setSenderStatus("没有检测到浏览器钱包，请安装或打开 OKX Wallet / MetaMask。", "error");
+    return;
+  }
+
+  const account = connectedAccount || (await connectWallet());
+  if (!account) return;
+
+  try {
+    const chainId = await switchToMainnet(provider);
+    updateWalletState(account, chainId);
+
+    const to = extractAddress(sendToInput.value);
+    if (!to) throw new Error("To 地址不完整");
+    const value = decimalEthToHex(sendValueInput.value);
+    const data = normalizeTxData(sendDataInput.value);
+    const ok = window.confirm(`确认发送交易？\n\nTo: ${to}\nValue: ${sendValueInput.value || "0"} ETH`);
+    if (!ok) return;
+
+    sendTransactionButton.disabled = true;
+    sendTransactionButton.textContent = "等待钱包";
+    setSenderStatus("请在钱包里确认交易。");
+
+    const hash = await provider.request({
+      method: "eth_sendTransaction",
+      params: [
+        {
+          from: normalizeAddress(account),
+          to,
+          value,
+          data
+        }
+      ]
+    });
+
+    setSenderStatus(`已发送：${hash}`, "ok");
+  } catch (err) {
+    setSenderStatus(err instanceof Error ? err.message : String(err), "error");
+  } finally {
+    sendTransactionButton.disabled = false;
+    sendTransactionButton.textContent = "发送交易";
+  }
+});
+
+const provider = getProvider();
+if (provider?.on) {
+  provider.on("accountsChanged", (accounts) => {
+    updateWalletState(accounts?.[0] || "", "");
+  });
+  provider.on("chainChanged", (chainId) => {
+    updateWalletState(connectedAccount, chainId);
+  });
+}
 
 for (const input of form.querySelectorAll("input[name='tradeType']")) {
   input.addEventListener("change", updateModeCopy);

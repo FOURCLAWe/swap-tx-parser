@@ -109,6 +109,13 @@ h3 {
   align-items: start;
 }
 
+.left-stack {
+  position: sticky;
+  top: 20px;
+  display: grid;
+  gap: 18px;
+}
+
 .panel {
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -117,11 +124,50 @@ h3 {
 }
 
 .form-panel {
-  position: sticky;
-  top: 20px;
   display: grid;
   gap: 16px;
   padding: 18px;
+}
+
+.sender-panel {
+  display: grid;
+  gap: 16px;
+  padding: 18px;
+}
+
+.sender-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.sender-head h2 {
+  margin-bottom: 0;
+}
+
+.ghost-btn {
+  min-height: 38px;
+  padding: 0 13px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  background: #111720;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.ghost-btn:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.wallet-line {
+  margin: -4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 .segmented {
@@ -214,6 +260,11 @@ h3 {
 .primary-btn:disabled {
   cursor: wait;
   opacity: 0.6;
+}
+
+.danger-btn {
+  color: #1a0804;
+  background: var(--amber);
 }
 
 .mini-note {
@@ -416,6 +467,20 @@ textarea {
   line-height: 1.45;
 }
 
+.sender-panel textarea {
+  min-height: 132px;
+}
+
+.load-btn {
+  min-height: 30px;
+  padding: 0 12px;
+  border: 1px solid rgba(72, 213, 151, 0.55);
+  border-radius: 8px;
+  color: #b9f1d8;
+  background: rgba(72, 213, 151, 0.1);
+  cursor: pointer;
+}
+
 .confidence {
   display: inline-flex;
   align-items: center;
@@ -459,7 +524,7 @@ textarea {
     grid-template-columns: 1fr;
   }
 
-  .form-panel {
+  .left-stack {
     position: static;
   }
 
