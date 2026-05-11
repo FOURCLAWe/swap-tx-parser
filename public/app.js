@@ -46,6 +46,18 @@ const knownMethods = {
   "0x08c1284c": "Aggregator packed sell"
 };
 let connectedAccount = "";
+let activeProvider = null;
+let activeProviderName = "";
+const announcedProviders = [];
+
+window.addEventListener("eip6963:announceProvider", (event) => {
+  const detail = event.detail || {};
+  if (detail.provider?.request && !announcedProviders.some((item) => item.provider === detail.provider)) {
+    announcedProviders.push(detail);
+  }
+});
+
+window.dispatchEvent(new Event("eip6963:requestProvider"));
 
 function extractTxHash(value) {
   const match = String(value || "").match(txRegex);
@@ -96,8 +108,51 @@ function updateModeCopy() {
   resultEl.innerHTML = "";
 }
 
+function isOkxProvider(provider, info = {}) {
+  const name = String(info.name || provider?.name || "").toLowerCase();
+  const rdns = String(info.rdns || provider?.rdns || "").toLowerCase();
+  return Boolean(
+    provider?.isOkxWallet ||
+      provider?.isOKExWallet ||
+      name.includes("okx") ||
+      rdns.includes("okx") ||
+      provider === window.okxwallet ||
+      provider === window.okxwallet?.ethereum
+  );
+}
+
+function getProviderName(provider, info = {}) {
+  if (isOkxProvider(provider, info)) return "OKX Wallet";
+  if (provider?.isMetaMask) return "MetaMask";
+  if (info.name) return info.name;
+  return "Injected Wallet";
+}
+
+function getInjectedProviders() {
+  const providers = [];
+  const addProvider = (provider, info = {}) => {
+    if (provider?.request && !providers.some((item) => item.provider === provider)) {
+      providers.push({ provider, info });
+    }
+  };
+
+  addProvider(window.okxwallet, { name: "OKX Wallet", rdns: "com.okx.wallet" });
+  addProvider(window.okxwallet?.ethereum, { name: "OKX Wallet", rdns: "com.okx.wallet" });
+  for (const item of announcedProviders) addProvider(item.provider, item.info || {});
+  for (const provider of window.ethereum?.providers || []) addProvider(provider);
+  addProvider(window.ethereum);
+
+  return providers;
+}
+
 function getProvider() {
-  return window.ethereum || null;
+  if (activeProvider?.request) return activeProvider;
+  const providers = getInjectedProviders();
+  const okx = providers.find((item) => isOkxProvider(item.provider, item.info));
+  const selected = okx || providers[0] || null;
+  activeProvider = selected?.provider || null;
+  activeProviderName = selected ? getProviderName(selected.provider, selected.info) : "";
+  return activeProvider;
 }
 
 function updateWalletState(account, chainId = "") {
@@ -107,7 +162,8 @@ function updateWalletState(account, chainId = "") {
     connectWalletButton.textContent = "连接";
     return;
   }
-  walletStateEl.textContent = `${shortAddress(connectedAccount)} / ${chainId === "0x1" ? "Ethereum" : chainId || "未知网络"}`;
+  const walletName = activeProviderName || "Wallet";
+  walletStateEl.textContent = `${walletName}: ${shortAddress(connectedAccount)} / ${chainId === "0x1" ? "Ethereum" : chainId || "未知网络"}`;
   connectWalletButton.textContent = "已连接";
   const walletInput = document.querySelector("#buyer-address");
   if (walletInput && !walletInput.value.trim()) walletInput.value = connectedAccount;
@@ -126,7 +182,7 @@ async function switchToMainnet(provider) {
 async function connectWallet() {
   const provider = getProvider();
   if (!provider) {
-    setSenderStatus("没有检测到浏览器钱包，请安装或打开 OKX Wallet / MetaMask。", "error");
+    setSenderStatus("没有检测到浏览器钱包，请安装或打开 OKX Wallet。", "error");
     return "";
   }
 
@@ -137,7 +193,7 @@ async function connectWallet() {
     const chainId = await switchToMainnet(provider);
     const account = accounts?.[0] || "";
     updateWalletState(account, chainId);
-    setSenderStatus("钱包已连接，发送前会弹出钱包确认。", "ok");
+    setSenderStatus(`${activeProviderName || "钱包"} 已连接，发送前会弹出钱包确认。`, "ok");
     return account;
   } catch (err) {
     setSenderStatus(err instanceof Error ? err.message : String(err), "error");
@@ -1106,7 +1162,7 @@ connectWalletButton.addEventListener("click", () => {
 sendTransactionButton.addEventListener("click", async () => {
   const provider = getProvider();
   if (!provider) {
-    setSenderStatus("没有检测到浏览器钱包，请安装或打开 OKX Wallet / MetaMask。", "error");
+    setSenderStatus("没有检测到浏览器钱包，请安装或打开 OKX Wallet。", "error");
     return;
   }
 
@@ -1149,12 +1205,12 @@ sendTransactionButton.addEventListener("click", async () => {
   }
 });
 
-const provider = getProvider();
-if (provider?.on) {
-  provider.on("accountsChanged", (accounts) => {
+const startupProvider = getProvider();
+if (startupProvider?.on) {
+  startupProvider.on("accountsChanged", (accounts) => {
     updateWalletState(accounts?.[0] || "", "");
   });
-  provider.on("chainChanged", (chainId) => {
+  startupProvider.on("chainChanged", (chainId) => {
     updateWalletState(connectedAccount, chainId);
   });
 }

@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Swap Tx Parser</title>
-    <link rel="stylesheet" href="./styles.css?v=5" />
+    <link rel="stylesheet" href="./styles.css?v=6" />
   </head>
   <body>
     <main class="shell">
@@ -79,10 +79,10 @@
                 <p class="eyebrow">Wallet sender</p>
                 <h2>十六进制发送器</h2>
               </div>
-              <button class="ghost-btn" id="connect-wallet" type="button">连接</button>
+              <button class="ghost-btn" id="connect-wallet" type="button">连接 OKX</button>
             </div>
 
-            <p class="wallet-line" id="wallet-state">未连接钱包</p>
+            <p class="wallet-line" id="wallet-state">未连接钱包，会优先识别 OKX Wallet</p>
 
             <label class="field">
               <span>To</span>
@@ -100,7 +100,7 @@
             </label>
 
             <button class="primary-btn danger-btn" id="send-transaction" type="button">发送交易</button>
-            <p class="form-status" id="sender-status">钱包会弹窗确认，本站不会保存私钥。</p>
+            <p class="form-status" id="sender-status">优先使用 OKX Wallet，钱包会弹窗确认，本站不会保存私钥。</p>
           </section>
         </aside>
 
@@ -130,6 +130,6 @@
       </div>
     </template>
 
-    <script src="./app.js?v=5" type="module"></script>
+    <script src="./app.js?v=6" type="module"></script>
   </body>
 </html>
