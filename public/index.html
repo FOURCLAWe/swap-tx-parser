@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Swap Tx Parser</title>
-    <link rel="stylesheet" href="./styles.css?v=6" />
+    <link rel="stylesheet" href="./styles.css?v=7" />
   </head>
   <body>
     <main class="shell">
@@ -84,6 +84,11 @@
 
             <p class="wallet-line" id="wallet-state">未连接钱包，会优先识别 OKX Wallet</p>
 
+            <div class="sender-queue" id="sender-queue" hidden>
+              <p class="copy-group-title">待发送步骤</p>
+              <div class="sender-steps" id="sender-steps"></div>
+            </div>
+
             <label class="field">
               <span>To</span>
               <input id="send-to" autocomplete="off" spellcheck="false" placeholder="0x..." />
@@ -130,6 +135,6 @@
       </div>
     </template>
 
-    <script src="./app.js?v=6" type="module"></script>
+    <script src="./app.js?v=7" type="module"></script>
   </body>
 </html>

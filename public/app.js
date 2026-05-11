@@ -17,6 +17,8 @@ const sendValueInput = document.querySelector("#send-value");
 const sendDataInput = document.querySelector("#send-data");
 const sendTransactionButton = document.querySelector("#send-transaction");
 const senderStatus = document.querySelector("#sender-status");
+const senderQueueEl = document.querySelector("#sender-queue");
+const senderStepsEl = document.querySelector("#sender-steps");
 
 const txRegex = /0x[a-fA-F0-9]{64}/;
 const addressRegex = /0x[a-fA-F0-9]{40}/;
@@ -48,6 +50,8 @@ const knownMethods = {
 let connectedAccount = "";
 let activeProvider = null;
 let activeProviderName = "";
+let senderSteps = [];
+let activeSenderStepIndex = -1;
 const announcedProviders = [];
 
 window.addEventListener("eip6963:announceProvider", (event) => {
@@ -217,20 +221,76 @@ function decimalEthToHex(value) {
   return `0x${wei.toString(16)}`;
 }
 
-function fillSender(txPayload, label = "交易") {
+function formatSenderStepLabel(index) {
+  const step = senderSteps[index];
+  return step ? `${index + 1}. ${step.label}` : "交易";
+}
+
+function renderSenderSteps() {
+  if (!senderQueueEl || !senderStepsEl) return;
+  senderStepsEl.innerHTML = "";
+  senderQueueEl.hidden = senderSteps.length === 0;
+
+  senderSteps.forEach((step, index) => {
+    const button = document.createElement("button");
+    button.className = `step-btn ${index === activeSenderStepIndex ? "active" : ""} ${step.sent ? "sent" : ""}`.trim();
+    button.type = "button";
+    button.textContent = `${index + 1}. ${step.label}${step.sent ? " / 已发" : ""}`;
+    button.addEventListener("click", () => fillSender(step.tx, formatSenderStepLabel(index)));
+    senderStepsEl.append(button);
+  });
+}
+
+function clearSenderQueue() {
+  senderSteps = [];
+  activeSenderStepIndex = -1;
+  renderSenderSteps();
+}
+
+function findSenderStepIndex(txPayload) {
+  return senderSteps.findIndex((step) => step.tx === txPayload);
+}
+
+function setSenderQueue(steps, options = {}) {
+  senderSteps = steps.filter((step) => step?.tx?.to && step?.tx?.data);
+  activeSenderStepIndex = -1;
+  renderSenderSteps();
+
+  if (options.autoFill !== false && senderSteps[0]) {
+    const firstLabel = formatSenderStepLabel(0);
+    const status =
+      senderSteps.length > 1
+        ? "已自动填入授权 approve。授权成功上链后，再点步骤 2 填入卖出 swap。"
+        : `${firstLabel} 已自动填入发送器，检查后点击发送交易。`;
+    fillSender(senderSteps[0].tx, firstLabel, { scroll: false, status });
+  }
+}
+
+function fillSender(txPayload, label = "交易", options = {}) {
+  if (!txPayload) return;
   sendToInput.value = txPayload.to || "";
   sendValueInput.value = txPayload.valueEth || "0";
   sendDataInput.value = txPayload.data || "0x";
-  setSenderStatus(`${label} 已填入发送器，检查后点击发送交易。`, "ok");
-  document.querySelector("#hex-sender")?.scrollIntoView({ behavior: "smooth", block: "start" });
-  sendToInput.focus();
+  const stepIndex = findSenderStepIndex(txPayload);
+  if (stepIndex >= 0) {
+    activeSenderStepIndex = stepIndex;
+    renderSenderSteps();
+  }
+  setSenderStatus(options.status || `${label} 已填入发送器，检查后点击发送交易。`, "ok");
+  if (options.scroll !== false) {
+    document.querySelector("#hex-sender")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    sendToInput.focus();
+  }
 }
 
 function showLoading(isLoading) {
   submitButton.disabled = isLoading;
   submitButton.textContent = isLoading ? "解析中..." : "解析并生成";
   setView(isLoading ? "loading" : "result");
-  if (isLoading) setFormStatus("正在读取链上交易，慢的话 15 秒会自动超时。");
+  if (isLoading) {
+    clearSenderQueue();
+    setFormStatus("正在读取链上交易，慢的话 15 秒会自动超时。");
+  }
 }
 
 function strip0x(value) {
@@ -1039,6 +1099,16 @@ function renderResult(data) {
     createMetric("滑点设置", data.slippage?.forceMinOutZero ? "强制成交 / minOut=0" : data.slippage?.percent || ""),
     createMetric("状态", status.textContent)
   );
+  if (isSell) {
+    summary.append(
+      createMetric(
+        "授权",
+        data.generated?.approve
+          ? `${data.generated.approve.amount} ${data.generated.approve.symbol} -> ${shortAddress(data.generated.approve.spender)}`
+          : "未生成"
+      )
+    );
+  }
   resultEl.append(createSection("识别结果", summary));
   resultEl.append(
     createSection(
@@ -1080,6 +1150,11 @@ function renderResult(data) {
     );
     resultEl.append(createSection("生成交易", generatedWrap));
 
+    const senderQueue = [];
+    if (data.generated.approve) senderQueue.push({ label: "授权 approve", tx: data.generated.approve, kind: "approve" });
+    senderQueue.push({ label: data.generated.approve ? "卖出 swap" : isSell ? "卖出 swap" : "买入 swap", tx: data.generated, kind: "swap" });
+    setSenderQueue(senderQueue);
+
     if (data.generated.changes?.length) {
       resultEl.append(createSection("已修改", createList(data.generated.changes, "change-list")));
     }
@@ -1087,6 +1162,7 @@ function renderResult(data) {
       resultEl.append(createSection("风险提示", createList(data.generated.warnings, "warning-list")));
     }
   } else {
+    clearSenderQueue();
     const warning = createList(["填入你的钱包地址后，会生成可复制的 To / Value / Data。"], "warning-list");
     resultEl.append(createSection("生成交易", warning));
   }
@@ -1196,7 +1272,19 @@ sendTransactionButton.addEventListener("click", async () => {
       ]
     });
 
-    setSenderStatus(`已发送：${hash}`, "ok");
+    if (activeSenderStepIndex >= 0 && senderSteps[activeSenderStepIndex]) {
+      senderSteps[activeSenderStepIndex].sent = true;
+      const sentLabel = formatSenderStepLabel(activeSenderStepIndex);
+      const nextIndex = senderSteps.findIndex((step, index) => index > activeSenderStepIndex && !step.sent);
+      renderSenderSteps();
+      if (nextIndex >= 0) {
+        setSenderStatus(`已发送 ${sentLabel}：${hash}。等授权上链后，点 ${formatSenderStepLabel(nextIndex)} 填入发送器。`, "ok");
+      } else {
+        setSenderStatus(`已发送 ${sentLabel}：${hash}`, "ok");
+      }
+    } else {
+      setSenderStatus(`已发送：${hash}`, "ok");
+    }
   } catch (err) {
     setSenderStatus(err instanceof Error ? err.message : String(err), "error");
   } finally {

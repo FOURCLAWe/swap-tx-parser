@@ -12,4 +12,5 @@ does not send transactions or ask for private keys.
 The page also includes a hex sender for browser wallets. It prefers OKX Wallet
 when available, including `window.okxwallet`, EIP-6963 providers, and multi-wallet
 `window.ethereum.providers`. Fill `To`, `Value ETH`, and `Data`, then confirm
-the transaction in your wallet.
+the transaction in your wallet. In sell mode, generated approval and swap
+transactions are shown as sender steps, and the approval is filled first.
