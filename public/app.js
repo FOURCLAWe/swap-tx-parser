@@ -836,6 +836,19 @@ function quoteLossText(ratio) {
   return `${loss.toFixed(4).replace(/\.?0+$/, "")}%`;
 }
 
+function parsePercentFromText(text) {
+  const match = String(text || "").match(/(\d+(?:\.\d+)?)\s*%/);
+  return match ? Number(match[1]) : null;
+}
+
+function taxRiskLevel(taxText) {
+  const percent = parsePercentFromText(taxText);
+  if (percent == null || !Number.isFinite(percent)) return "unknown";
+  if (percent >= 50) return "high";
+  if (percent >= 10) return "medium";
+  return "low";
+}
+
 function hexToUtf8(hexValue) {
   const clean = strip0x(hexValue);
   const bytes = new Uint8Array(clean.length / 2);
@@ -2565,12 +2578,15 @@ function renderResult(data) {
 function renderProbeResult(data) {
   resultEl.innerHTML = "";
   const riskText = data.risk === "high" ? "高风险" : data.risk === "medium" ? "需人工复核" : "低风险";
+  const sellTaxText = data.taxEstimates?.sellTax || "无法估算";
+  const sellTaxRisk = taxRiskLevel(sellTaxText);
   setProbeStatus(`检测完成：${riskText}`, data.risk === "high" ? "error" : "ok");
 
   const summary = document.createElement("div");
   summary.className = "summary-grid";
   summary.append(
     createMetric("风险结论", riskText, `risk-value-${data.risk}`, `risk-card-${data.risk}`),
+    createMetric("卖税估算", sellTaxText, `tax-value-${sellTaxRisk}`, `tax-card-${sellTaxRisk}`),
     createMetric("原交易", data.tx.hash),
     createMetric("原交易 To", data.tx.to || "无"),
     createMetric("方法", data.tx.selector),
@@ -2595,7 +2611,7 @@ function renderProbeResult(data) {
   taxSummary.className = "summary-grid";
   taxSummary.append(
     createMetric("买税估算", data.taxEstimates?.buyTax || "无法估算"),
-    createMetric("卖税估算", data.taxEstimates?.sellTax || "无法估算")
+    createMetric("卖税估算", sellTaxText, `tax-value-${sellTaxRisk}`, `tax-card-${sellTaxRisk}`)
   );
   resultEl.append(createSection("买卖税", taxSummary));
   if (data.taxEstimates?.notes?.length) {
