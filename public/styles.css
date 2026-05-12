@@ -354,6 +354,11 @@ h3 {
   background: var(--amber);
 }
 
+.direct-buy-btn {
+  color: #f8fff9;
+  background: var(--green-2);
+}
+
 .mini-note {
   margin: -4px 0 0;
   color: var(--muted);

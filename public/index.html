@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Swap Tx Parser</title>
-    <link rel="stylesheet" href="./styles.css?v=19" />
+    <link rel="stylesheet" href="./styles.css?v=20" />
   </head>
   <body>
     <main class="shell">
@@ -111,6 +111,7 @@
             </label>
 
             <button class="primary-btn" type="submit">解析并生成</button>
+            <button class="primary-btn direct-buy-btn" id="parse-and-buy" type="button">解析并买入</button>
             <p class="form-status" id="form-status">准备好了，粘完整 tx 后点按钮。</p>
             <p class="mini-note" id="mode-note">只生成参数，不发送交易。未知路由先小额试单。</p>
           </form>
@@ -215,6 +216,6 @@
       </div>
     </template>
 
-    <script src="./app.js?v=19" type="module"></script>
+    <script src="./app.js?v=20" type="module"></script>
   </body>
 </html>

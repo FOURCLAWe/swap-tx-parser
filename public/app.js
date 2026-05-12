@@ -4,6 +4,7 @@ const loadingState = document.querySelector("#loading-state");
 const resultEl = document.querySelector("#result");
 const copyRowTemplate = document.querySelector("#copy-row-template");
 const submitButton = form.querySelector("button[type='submit']");
+const parseAndBuyButton = document.querySelector("#parse-and-buy");
 const formStatus = document.querySelector("#form-status");
 const probeForm = document.querySelector("#probe-form");
 const probeSubmitButton = probeForm.querySelector("button[type='submit']");
@@ -131,6 +132,15 @@ function setSenderStatus(message, state = "") {
   senderStatus.className = `form-status ${state}`.trim();
 }
 
+function setAnalyzeBusy(isBusy, buttonText = "解析中...") {
+  submitButton.disabled = isBusy;
+  submitButton.textContent = isBusy ? "解析中..." : "解析并生成";
+  if (parseAndBuyButton) {
+    parseAndBuyButton.disabled = isBusy;
+    parseAndBuyButton.textContent = isBusy ? buttonText : "解析并买入";
+  }
+}
+
 function setView(view) {
   emptyState.hidden = view !== "empty";
   loadingState.hidden = view !== "loading";
@@ -163,7 +173,8 @@ function updateModeCopy() {
   tradeAmountInput.placeholder = isSell ? "74" : "0.05";
   modeNote.textContent = isSell
     ? "按滑点重算最小输出；勾强制成交会把 minOut 设为 0。"
-    : "按滑点重算最小输出；价格涨太快就调大滑点。";
+    : "可只解析生成，也可解析并买入直接弹钱包确认。价格涨太快就调大滑点。";
+  if (parseAndBuyButton) parseAndBuyButton.hidden = isSell;
   emptyCopy.textContent = isSell
     ? "输入一笔已经成功卖出的 Ethereum 交易，工具会解析卖出路径。"
     : "输入一笔已经成功买入的 Ethereum 交易，工具会解析购买路径。";
@@ -368,8 +379,7 @@ function buildManualApproval() {
 }
 
 function showLoading(isLoading) {
-  submitButton.disabled = isLoading;
-  submitButton.textContent = isLoading ? "解析中..." : "解析并生成";
+  setAnalyzeBusy(isLoading);
   setView(isLoading ? "loading" : "result");
   if (isLoading) {
     clearSenderQueue();
@@ -2439,8 +2449,7 @@ function renderResult(data) {
   }
 
   loadingState.hidden = true;
-  submitButton.disabled = false;
-  submitButton.textContent = "解析并生成";
+  setAnalyzeBusy(false);
   setView("result");
 }
 
@@ -2544,8 +2553,7 @@ function renderError(error, details) {
   box.className = "error-box";
   box.textContent = details ? `${error}: ${details}` : error;
   resultEl.append(box);
-  submitButton.disabled = false;
-  submitButton.textContent = "解析并生成";
+  setAnalyzeBusy(false);
   setView("result");
 }
 
@@ -2561,26 +2569,21 @@ function renderProbeError(error, details) {
   setView("result");
 }
 
-form.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const formData = new FormData(form);
+function buildAnalyzePayload(formData, overrideWalletAddress = "") {
   const tradeType = getTradeType();
   const txHash = extractTxHash(formData.get("txHash"));
-  const walletAddress = extractAddress(formData.get("buyerAddress"));
-  const rawTx = String(formData.get("txHash") || "").trim();
+  const walletAddress = overrideWalletAddress ? normalizeAddress(overrideWalletAddress) : extractAddress(formData.get("buyerAddress"));
   const rawAddress = String(formData.get("buyerAddress") || "").trim();
 
   if (!txHash) {
-    renderError("交易哈希不完整", "请粘贴完整 tx，格式是 0x + 64 位十六进制；也可以直接粘 Etherscan 交易链接。");
-    return;
+    throw new Error("交易哈希不完整：请粘贴完整 tx，格式是 0x + 64 位十六进制；也可以直接粘 Etherscan 交易链接。");
   }
 
-  if (rawAddress && !walletAddress) {
-    renderError("钱包地址不完整", "钱包地址格式应该是 0x + 40 位十六进制。");
-    return;
+  if (!overrideWalletAddress && rawAddress && !walletAddress) {
+    throw new Error("钱包地址不完整：钱包地址格式应该是 0x + 40 位十六进制。");
   }
 
-  const payload = {
+  return {
     tradeType,
     txHash,
     walletAddress,
@@ -2588,6 +2591,58 @@ form.addEventListener("submit", async (event) => {
     slippagePercent: String(formData.get("slippagePercent") || "").trim(),
     forceMinOutZero: formData.get("forceMinOutZero") === "on"
   };
+}
+
+function txPayloadValueHex(txPayload) {
+  if (txPayload?.valueWei != null && txPayload.valueWei !== "") {
+    return `0x${BigInt(txPayload.valueWei).toString(16)}`;
+  }
+  return decimalEthToHex(txPayload?.valueEth || "0");
+}
+
+async function sendTxPayloadWithWallet(txPayload, label = "交易", options = {}) {
+  const provider = getProvider();
+  if (!provider) throw new Error("没有检测到浏览器钱包，请安装或打开 OKX Wallet。");
+
+  const account = connectedAccount || (await connectWallet());
+  if (!account) throw new Error("钱包未连接");
+
+  const chainId = await switchToMainnet(provider);
+  updateWalletState(account, chainId);
+
+  const to = extractAddress(txPayload?.to || "");
+  if (!to) throw new Error("生成交易缺少 To 地址");
+  const value = txPayloadValueHex(txPayload);
+  const data = normalizeTxData(txPayload?.data || "0x");
+  const valueEth = txPayload?.valueEth || formatUnits(BigInt(value), 18, 18);
+
+  if (options.confirm !== false) {
+    const ok = window.confirm(`确认发送${label}？\n\nTo: ${to}\nETH: ${valueEth}\n\n钱包会弹窗确认。`);
+    if (!ok) return "";
+  }
+
+  return provider.request({
+    method: "eth_sendTransaction",
+    params: [
+      {
+        from: normalizeAddress(account),
+        to,
+        value,
+        data
+      }
+    ]
+  });
+}
+
+form.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  let payload;
+  try {
+    payload = buildAnalyzePayload(new FormData(form));
+  } catch (err) {
+    renderError("输入有误", err instanceof Error ? err.message : String(err));
+    return;
+  }
 
   showLoading(true);
 
@@ -2600,6 +2655,67 @@ form.addEventListener("submit", async (event) => {
       return;
     }
     renderError("请求失败", err instanceof Error ? err.message : String(err));
+  }
+});
+
+parseAndBuyButton?.addEventListener("click", async () => {
+  const formData = new FormData(form);
+  const tradeType = getTradeType();
+  if (tradeType !== "buy") {
+    renderError("暂只支持买入", "解析并买入只用于买入模式；卖出需要先授权，请用“解析并生成”。");
+    return;
+  }
+
+  const rawAddress = String(formData.get("buyerAddress") || "").trim();
+  let walletAddress = rawAddress ? extractAddress(rawAddress) : "";
+  if (rawAddress && !walletAddress) {
+    renderError("钱包地址不完整", "钱包地址格式应该是 0x + 40 位十六进制。");
+    return;
+  }
+
+  try {
+    const account = connectedAccount || (await connectWallet());
+    if (!account) return;
+
+    const accountAddress = normalizeAddress(account);
+    if (!walletAddress) {
+      walletAddress = accountAddress;
+      document.querySelector("#buyer-address").value = accountAddress;
+    } else if (walletAddress !== accountAddress) {
+      const ok = window.confirm(`接收地址不是当前连接钱包。\n\n接收地址: ${walletAddress}\n当前钱包: ${accountAddress}\n\n继续解析并买入？`);
+      if (!ok) return;
+    }
+
+    const payload = buildAnalyzePayload(formData, walletAddress);
+    setAnalyzeBusy(true, "解析并买入中...");
+    setView("loading");
+    clearSenderQueue();
+    setFormStatus("正在解析交易，完成后会直接弹钱包确认买入。");
+
+    const data = await analyzeTransaction(payload);
+    renderResult(data);
+    if (!data.generated?.to || !data.generated?.data) throw new Error("没有生成可发送的买入交易");
+    if (data.generated.approve) throw new Error("买入交易不应需要 approve，请改用解析并生成检查结果");
+    setAnalyzeBusy(true, "等待钱包...");
+    setFormStatus("解析完成，等待钱包确认买入。");
+
+    try {
+      const hash = await sendTxPayloadWithWallet(data.generated, "买入交易");
+      if (!hash) {
+        setFormStatus("已解析，已取消发送。", "error");
+        return;
+      }
+      setFormStatus(`已提交买入交易：${hash}`, "ok");
+      setSenderStatus(`已提交买入交易：${hash}`, "ok");
+    } catch (sendErr) {
+      const message = sendErr instanceof Error ? sendErr.message : String(sendErr);
+      setFormStatus(`已解析，发送失败：${message}`, "error");
+      setSenderStatus(message, "error");
+    }
+  } catch (err) {
+    renderError("解析并买入失败", err instanceof Error ? err.message : String(err));
+  } finally {
+    setAnalyzeBusy(false);
   }
 });
 

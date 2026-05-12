@@ -5,6 +5,10 @@ A static Ethereum transaction parser for cloning successful buy or sell swaps.
 Open a successful transaction hash, enter your wallet and amount, then copy the
 generated `To`, `Value`, and `Data` fields. Sell mode also generates an ERC20
 `approve` transaction when the sold token can be identified from logs.
+Buy mode also includes `解析并买入`, which parses the reference transaction,
+uses the connected wallet as the recipient when the wallet field is blank, and
+submits the generated buy transaction through the browser wallet after a
+confirmation prompt.
 
 The app runs entirely in the browser against a public Ethereum RPC endpoint. It
 does not send transactions or ask for private keys.
