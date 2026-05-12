@@ -28,3 +28,6 @@ identifies v4 PoolManager/PoolId candidates and possible Hook/router addresses,
 then uses `eth_call` to preflight current buy, approve, and token
 transfer-to-pool behavior. Contract-only mode is a basic scan; exact taxes need
 transaction logs or a forked simulation.
+
+The tools are separated behind a top navigation bar so only one form is visible
+at a time.

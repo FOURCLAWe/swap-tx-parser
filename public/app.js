@@ -28,6 +28,8 @@ const approveAmountInput = document.querySelector("#approve-amount");
 const approveDecimalsInput = document.querySelector("#approve-decimals");
 const approveMaxInput = document.querySelector("#approve-max");
 const buildApprovalButton = document.querySelector("#build-approval");
+const toolNavButtons = [...document.querySelectorAll("[data-tool-target]")];
+const toolPanels = [...document.querySelectorAll("[data-tool-panel]")];
 
 const txRegex = /0x[a-fA-F0-9]{64}/;
 const addressRegex = /0x[a-fA-F0-9]{40}/;
@@ -109,6 +111,20 @@ function setView(view) {
   emptyState.hidden = view !== "empty";
   loadingState.hidden = view !== "loading";
   resultEl.hidden = view !== "result";
+}
+
+function showToolPanel(name, options = {}) {
+  for (const panel of toolPanels) {
+    panel.hidden = panel.dataset.toolPanel !== name;
+  }
+  for (const button of toolNavButtons) {
+    const active = button.dataset.toolTarget === name;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-current", active ? "page" : "false");
+  }
+  if (options.scroll) {
+    document.querySelector(".tool-nav")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
 }
 
 function getTradeType() {
@@ -282,7 +298,7 @@ function setSenderQueue(steps, options = {}) {
       senderSteps.length > 1
         ? "已自动填入授权 approve 的 To 和 Data。金额框不会自动填；授权上链后，再点步骤 2 填入卖出 swap。"
         : `${firstLabel} 已自动填入 To 和 Data，金额框请手动填写。`;
-    fillSender(senderSteps[0].tx, firstLabel, { scroll: false, status });
+    fillSender(senderSteps[0].tx, firstLabel, { scroll: false, status, showSender: false });
   }
 }
 
@@ -296,9 +312,9 @@ function fillSender(txPayload, label = "交易", options = {}) {
     activeSenderStepIndex = stepIndex;
     renderSenderSteps();
   }
+  if (options.showSender !== false) showToolPanel("sender", { scroll: options.scroll !== false });
   setSenderStatus(options.status || `${label} 已填入 To 和 Data，金额框请手动填写。`, "ok");
   if (options.scroll !== false) {
-    document.querySelector("#hex-sender")?.scrollIntoView({ behavior: "smooth", block: "start" });
     sendToInput.focus();
   }
 }
@@ -1946,6 +1962,12 @@ probeForm.addEventListener("submit", async (event) => {
 connectWalletButton.addEventListener("click", () => {
   connectWallet();
 });
+
+for (const button of toolNavButtons) {
+  button.addEventListener("click", () => {
+    showToolPanel(button.dataset.toolTarget, { scroll: false });
+  });
+}
 
 buildApprovalButton.addEventListener("click", buildManualApproval);
 

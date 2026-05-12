@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Swap Tx Parser</title>
-    <link rel="stylesheet" href="./styles.css?v=14" />
+    <link rel="stylesheet" href="./styles.css?v=15" />
   </head>
   <body>
     <main class="shell">
@@ -19,9 +19,16 @@
         </div>
       </header>
 
+      <nav class="tool-nav" aria-label="功能导航">
+        <button class="tool-nav-btn active" type="button" data-tool-target="risk">买卖风险监测</button>
+        <button class="tool-nav-btn" type="button" data-tool-target="parser">交易解析器</button>
+        <button class="tool-nav-btn" type="button" data-tool-target="approval">授权工具</button>
+        <button class="tool-nav-btn" type="button" data-tool-target="sender">十六进制发送器</button>
+      </nav>
+
       <section class="workspace">
         <aside class="left-stack">
-          <form class="panel probe-panel" id="probe-form">
+          <form class="panel probe-panel tool-panel" id="probe-form" data-tool-panel="risk">
             <div class="sender-head">
               <div>
                 <p class="eyebrow">Risk monitor</p>
@@ -57,7 +64,7 @@
             <p class="mini-note">卖税需要卖出日志或 fork 才能精确估算；这里会标注日志估算和当前预检结果。</p>
           </form>
 
-          <form class="panel form-panel" id="analyze-form">
+          <form class="panel form-panel tool-panel" id="analyze-form" data-tool-panel="parser" hidden>
             <div class="sender-head">
               <div>
                 <p class="eyebrow">Transaction parser</p>
@@ -119,7 +126,7 @@
             <p class="mini-note" id="mode-note">只生成参数，不发送交易。未知路由先小额试单。</p>
           </form>
 
-          <section class="panel approval-panel" id="approval-builder">
+          <section class="panel approval-panel tool-panel" id="approval-builder" data-tool-panel="approval" hidden>
             <div class="sender-head">
               <div>
                 <p class="eyebrow">ERC20 approve</p>
@@ -158,7 +165,7 @@
             <p class="mini-note">不知道 Spender 时，先用一笔成功卖出 tx 解析，工具会自动带出授权。</p>
           </section>
 
-          <section class="panel sender-panel" id="hex-sender">
+          <section class="panel sender-panel tool-panel" id="hex-sender" data-tool-panel="sender" hidden>
             <div class="sender-head">
               <div>
                 <p class="eyebrow">Wallet sender</p>
@@ -219,6 +226,6 @@
       </div>
     </template>
 
-    <script src="./app.js?v=14" type="module"></script>
+    <script src="./app.js?v=15" type="module"></script>
   </body>
 </html>
