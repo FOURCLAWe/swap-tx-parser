@@ -31,12 +31,14 @@ The wallet connect button lives in the top-right header.
 
 The risk monitor only asks for a token contract. It queries GoPlus,
 Honeypot.is, Honeypot pair-specific checks, holder analysis, DexScreener pairs,
-v4 PoolManager initialization logs, and the Uniswap v4 Quoter with automatic
-defaults. For v4 pools it quotes multiple small sell sizes and compares the
-output with the current pool price to flag severe sell-side loss even when the
-ERC20 itself is plain. If the v4 pool initialization transaction was sent by
-the token creator, the result is marked high risk as a dev-created pool. Exact
-taxes still need transaction logs or a forked simulation.
+LP holder lock status, v4 PoolManager initialization logs, and the Uniswap v4
+Quoter with automatic defaults. For v4 pools it quotes multiple small sell
+sizes and compares the output with the current pool price to flag severe
+sell-side loss even when the ERC20 itself is plain. If the v4 pool
+initialization transaction was sent by the token creator, the result is marked
+high risk as a dev-created pool. If no LP lock or burn evidence is found, the
+result adds a rug-pull risk warning. Exact taxes still need transaction logs or
+a forked simulation.
 
 The tools are separated behind a top navigation bar so only one form is visible
 at a time.

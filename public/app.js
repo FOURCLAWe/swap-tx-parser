@@ -45,6 +45,11 @@ const v4PoolManagerAddress = "0x000000000004444c5dc75cb358380d2e3de08a90";
 const permit2Address = "0x000000000022d473030f116ddee9f6b43ac78ba3";
 const universalRouterAddress = "0x66a9893cc07d91d95644aedd05d03f95e1dba8af";
 const universalRouter211Address = "0x4c82d1fbfe28c977cbb58d8c7ff8fcf9f70a2cca";
+const lpBurnAddresses = [
+  zeroAddress,
+  "0x000000000000000000000000000000000000dead",
+  "0x0000000000000000000000000000000000000001"
+];
 const v4InitializeTopic = "0xdd466e674ea557f56295e2d0218a125ea4b4f0f6f3307b95f85e6110838d6438";
 const v4SwapTopic = "0x40e9cecb9f5f1f1c5b9c97dec2917b7ee92e57ba5563708daca94dd84ad7112f";
 const goPlusTokenSecurityUrl = "https://api.gopluslabs.io/api/v1/token_security/1";
@@ -888,6 +893,35 @@ function numberToDecimalString(value, maxFraction = 18) {
 function numberToUnits(value, decimals = 18) {
   const text = numberToDecimalString(value, Math.min(Number(decimals) || 18, 18));
   return text ? parseDecimalToUnits(text, decimals) : null;
+}
+
+function normalizeRatio(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) return 0;
+  return number > 1 ? number / 100 : number;
+}
+
+function formatRatioPercent(value) {
+  const percent = Math.max(0, Math.min(1, Number(value) || 0)) * 100;
+  return `${percent.toFixed(4).replace(/\.?0+$/, "")}%`;
+}
+
+function formatBigIntRatio(amount, total) {
+  const numerator = BigInt(amount || 0);
+  const denominator = BigInt(total || 0);
+  if (denominator <= 0n) return { ratio: 0, text: "0%" };
+  const bps = (numerator * 10000n) / denominator;
+  const whole = bps / 100n;
+  const fraction = (bps % 100n).toString().padStart(2, "0").replace(/0+$/, "");
+  return {
+    ratio: Number(bps) / 10000,
+    text: `${fraction ? `${whole}.${fraction}` : whole.toString()}%`
+  };
+}
+
+function isBurnAddress(address) {
+  const normalized = normalizeAddress(address || zeroAddress);
+  return lpBurnAddresses.includes(normalized);
 }
 
 function hexToUtf8(hexValue) {
@@ -1784,6 +1818,138 @@ function chooseProbeSellAmounts({ requestedAmount, fallbackAmount, totalSupply, 
   return filtered.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)).slice(0, 4);
 }
 
+function getPairLiquidityKind(pair, security) {
+  const pairAddress = String(pair?.pairAddress || "").toLowerCase();
+  const dexEntries = Array.isArray(security?.dex) ? security.dex : [];
+  const dexEntry = dexEntries.find((item) => String(item.pair || "").toLowerCase() === pairAddress) || dexEntries[0] || null;
+  const labels = Array.isArray(pair?.labels) ? pair.labels.map((label) => String(label).toLowerCase()) : [];
+  const typeText = `${dexEntry?.liquidity_type || ""} ${dexEntry?.name || ""} ${labels.join(" ")} ${pair?.dexId || ""}`.toLowerCase();
+  if (String(pair?.pairAddress || "").length === 66 || typeText.includes("v4") || typeText.includes("univ4")) return "v4";
+  if (typeText.includes("v3") || typeText.includes("univ3")) return "v3";
+  if (typeText.includes("v2") || typeText.includes("univ2") || typeText.includes("uniswapv2")) return "v2";
+  return isStrictAddress(pair?.pairAddress) ? "unknown" : "unknown";
+}
+
+function isV4DexPair(pair) {
+  const labels = Array.isArray(pair?.labels) ? pair.labels.map((label) => String(label).toLowerCase()) : [];
+  return labels.includes("v4") || String(pair?.pairAddress || "").length === 66;
+}
+
+function getGoPlusLpLock(security) {
+  const holders = Array.isArray(security?.lp_holders) ? security.lp_holders : [];
+  if (!holders.length) return null;
+
+  let lockedRatio = 0;
+  const lockedHolders = [];
+  for (const holder of holders) {
+    const ratio = normalizeRatio(holder.percent);
+    const locked = isRiskFlag(holder.is_locked) || isBurnAddress(holder.address) || /lock|burn|dead/i.test(String(holder.tag || ""));
+    if (!locked) continue;
+    lockedRatio += ratio;
+    lockedHolders.push({
+      address: normalizeAddress(holder.address || zeroAddress),
+      ratio,
+      tag: holder.tag || ""
+    });
+  }
+  lockedRatio = Math.min(1, lockedRatio);
+  const topHolder = holders[0];
+  const status = lockedRatio >= 0.5 ? "locked" : lockedRatio > 0 ? "partial" : "unlocked";
+  const summary =
+    status === "locked"
+      ? `已锁/销毁 ${formatRatioPercent(lockedRatio)} LP`
+      : status === "partial"
+        ? `仅锁/销毁 ${formatRatioPercent(lockedRatio)} LP`
+        : "未检测到 LP 锁定";
+
+  return {
+    status,
+    summary,
+    lockedPercent: formatRatioPercent(lockedRatio),
+    source: "GoPlus lp_holders",
+    details: [
+      `GoPlus LP holder 数：${security.lp_holder_count || holders.length}`,
+      lockedHolders.length
+        ? `锁定/销毁地址：${lockedHolders.slice(0, 3).map((holder) => `${shortAddress(holder.address)} ${formatRatioPercent(holder.ratio)}`).join("，")}`
+        : "GoPlus 未标记主要 LP holder 为锁定。",
+      topHolder?.address ? `最大 LP holder：${shortAddress(topHolder.address)} ${formatRatioPercent(normalizeRatio(topHolder.percent))}` : ""
+    ].filter(Boolean)
+  };
+}
+
+async function getBurnedLpLock(pairAddress) {
+  if (!isStrictAddress(pairAddress)) return null;
+  const pair = normalizeAddress(pairAddress);
+  const totalSupply = await getTotalSupply(pair);
+  if (totalSupply <= 0n) return null;
+  const balances = await Promise.allSettled(lpBurnAddresses.map((address) => getTokenBalance(pair, address)));
+  const burned = balances.reduce((total, result) => (result.status === "fulfilled" ? total + result.value : total), 0n);
+  const burnedRatio = formatBigIntRatio(burned, totalSupply);
+  const status = burnedRatio.ratio >= 0.5 ? "locked" : burnedRatio.ratio > 0 ? "partial" : "unlocked";
+  return {
+    status,
+    summary:
+      status === "locked"
+        ? `已销毁 ${burnedRatio.text} LP`
+        : status === "partial"
+          ? `仅销毁 ${burnedRatio.text} LP`
+          : "未检测到 LP 锁定",
+    lockedPercent: burnedRatio.text,
+    source: "链上 LP burn 地址余额",
+    details: [`LP totalSupply 可读取，burn/dead 地址占比 ${burnedRatio.text}。`]
+  };
+}
+
+async function getLpLockStatus({ security, pair }) {
+  const goPlusLock = getGoPlusLpLock(security);
+  if (goPlusLock) return goPlusLock;
+
+  if (!pair) {
+    return {
+      status: "unknown",
+      summary: "未找到 LP",
+      lockedPercent: "未知",
+      source: "无池子",
+      details: ["没有找到可用于判断 LP 锁定的主池。"]
+    };
+  }
+
+  const kind = getPairLiquidityKind(pair, security);
+  if (kind === "v2" || kind === "unknown") {
+    try {
+      const burnedLock = await getBurnedLpLock(pair.pairAddress);
+      if (burnedLock) return burnedLock;
+    } catch (err) {
+      return {
+        status: "unknown",
+        summary: "LP 锁定未确认",
+        lockedPercent: "未知",
+        source: "链上 LP burn 地址余额",
+        details: [`LP token burn 地址检查失败：${err instanceof Error ? err.message : String(err)}`]
+      };
+    }
+  }
+
+  return {
+    status: "unknown",
+    summary: `${kind === "v3" || kind === "v4" ? kind.toUpperCase() : "LP"} 锁定未确认`,
+    lockedPercent: "未知",
+    source: `${kind.toUpperCase()} 流动性形态`,
+    details: [
+      kind === "v3" || kind === "v4"
+        ? "v3/v4 流动性不是传统 ERC20 LP token，本站无法仅靠 pair 地址确认锁仓。"
+        : "没有拿到可验证的 LP 锁仓数据。"
+    ]
+  };
+}
+
+function lpLockRiskLevel(lpLock) {
+  if (!lpLock) return "medium";
+  if (lpLock.status === "locked") return "low";
+  if (lpLock.status === "partial" || lpLock.status === "unknown") return "medium";
+  return "high";
+}
+
 function applyGoPlusFindings(security, warnings, positives) {
   if (!security) {
     warnings.push("GoPlus 没有返回该合约的完整风险数据。");
@@ -1938,7 +2104,8 @@ async function analyzeTokenOnly(tokenAddress, options = {}) {
     logAddressCandidates: [],
     endpointCandidates: [],
     poolTarget: "",
-    router: ""
+    router: "",
+    lpLock: null
   };
   let taxEstimates = {
     buyTax: "需要最早买入 tx 日志或模拟接口",
@@ -1978,6 +2145,10 @@ async function analyzeTokenOnly(tokenAddress, options = {}) {
     : null;
   let quoteAmountRaw = requestedSellAmount ?? defaultProbeSellAmount(totalSupply, meta.decimals ?? 18);
 
+  let goPlusSecurity = null;
+  let topDexPair = null;
+  let dexPairs = [];
+
   const [goPlusResult, honeypotResult, dexResult] = await Promise.allSettled([
     getGoPlusSecurity(token),
     getHoneypotCheck(token),
@@ -1986,6 +2157,7 @@ async function analyzeTokenOnly(tokenAddress, options = {}) {
 
   if (goPlusResult.status === "fulfilled") {
     const security = goPlusResult.value;
+    goPlusSecurity = security;
     tokenCreator = security?.creator_address ? normalizeAddress(security.creator_address) : "";
     if (security?.token_symbol && !meta.symbol) meta.symbol = security.token_symbol;
     if (security?.token_name && !meta.name) meta.name = security.token_name;
@@ -2013,10 +2185,11 @@ async function analyzeTokenOnly(tokenAddress, options = {}) {
   if (dexResult.status === "fulfilled" && dexResult.value.length) {
     const pairs = dexResult.value;
     const topPair = pairs[0];
-    const v4Pairs = pairs.filter((pair) => {
-      const labels = Array.isArray(pair.labels) ? pair.labels.map((label) => String(label).toLowerCase()) : [];
-      return labels.includes("v4") || String(pair.pairAddress || "").length === 66;
-    });
+    dexPairs = pairs;
+    topDexPair = topPair;
+    const v4Pairs = pairs.filter(isV4DexPair);
+    const mainIsV4 = isV4DexPair(topPair);
+    const mainKind = getPairLiquidityKind(topPair, goPlusSecurity);
 
     externalChecks.push(`DexScreener：找到 ${pairs.length} 个 Ethereum 池，主池 ${summarizeDexPair(topPair)}`);
     if (isStrictAddress(topPair.pairAddress)) {
@@ -2034,16 +2207,16 @@ async function analyzeTokenOnly(tokenAddress, options = {}) {
 
     pool = {
       ...pool,
-      protocol: v4Pairs.length ? "Uniswap v4 / DexScreener + PoolManager" : `${topPair.dexId || "DEX"} 池`,
-      poolManager: v4Pairs.length ? v4PoolManagerAddress : "",
-      poolIdCandidates: v4Pairs.map((pair) => normalizeHex(pair.pairAddress)).slice(0, 8),
+      protocol: mainIsV4 ? "Uniswap v4 / DexScreener + PoolManager" : `${topPair.dexId || "DEX"} ${mainKind.toUpperCase()} 池`,
+      poolManager: mainIsV4 ? v4PoolManagerAddress : "",
+      poolIdCandidates: mainIsV4 ? v4Pairs.map((pair) => normalizeHex(pair.pairAddress)).slice(0, 8) : [],
       logAddressCandidates: pairs.map((pair) => normalizeHex(pair.pairAddress)).slice(0, 8),
-      poolTarget: v4Pairs[0]?.pairAddress ? normalizeHex(v4Pairs[0].pairAddress) : normalizeHex(topPair.pairAddress),
-      router: v4Pairs.length ? universalRouterAddress : ""
+      poolTarget: normalizeHex(topPair.pairAddress),
+      router: mainIsV4 ? universalRouterAddress : ""
     };
 
-    if (v4Pairs.length) {
-      const v4Pair = v4Pairs[0];
+    if (mainIsV4) {
+      const v4Pair = topPair;
       warnings.push("DexScreener 显示主池是 Uniswap v4。v4 的税和限制常在 Hook 里，普通 ERC20 扫描会漏掉。");
       try {
         const poolInit = await getV4PoolInitialization(v4Pair.pairAddress);
@@ -2234,12 +2407,32 @@ async function analyzeTokenOnly(tokenAddress, options = {}) {
         warnings.push(`v4 PoolManager 回查失败：${err instanceof Error ? err.message : String(err)}`);
       }
     } else {
-      positives.push("DexScreener 找到普通 DEX 池。");
+      positives.push("DexScreener 找到普通 DEX 主池。");
+      if (v4Pairs.length) externalChecks.push(`DexScreener：另发现 ${v4Pairs.length} 个 v4 池，但主池不是 v4，未作为主要风险池。`);
     }
   } else if (dexResult.status === "fulfilled") {
     warnings.push("DexScreener 没有找到该代币的 Ethereum 池子。");
   } else {
     warnings.push(`DexScreener 查询失败：${dexResult.reason?.message || String(dexResult.reason)}`);
+  }
+
+  try {
+    const lpLock = await getLpLockStatus({ security: goPlusSecurity, pair: topDexPair });
+    pool = { ...pool, lpLock };
+    externalChecks.push(`LP 锁定检测：${lpLock.summary}（${lpLock.source}）`);
+    if (lpLock.details?.length) externalChecks.push(...lpLock.details.map((detail) => `LP 锁定详情：${detail}`));
+    if (lpLock.status === "locked") {
+      positives.push(`LP 锁定/销毁已确认：${lpLock.lockedPercent}。`);
+    } else if (lpLock.status === "partial") {
+      warnings.push(`LP 只检测到部分锁定/销毁：${lpLock.lockedPercent}，仍存在撤池风险。`);
+    } else if (lpLock.status === "unlocked") {
+      warnings.push("未检测到 LP 锁定/销毁，项目方可能移除流动性，按高风险处理。");
+      highRisk = true;
+    } else {
+      warnings.push("LP 锁定状态未确认，无法排除撤池风险。");
+    }
+  } catch (err) {
+    warnings.push(`LP 锁定检测失败：${err instanceof Error ? err.message : String(err)}`);
   }
 
   const finalSellTaxRisk = taxRiskLevel(taxEstimates.sellTax);
@@ -2759,6 +2952,8 @@ function renderProbeResult(data) {
   const riskText = data.risk === "high" ? "高风险" : data.risk === "medium" ? "需人工复核" : "低风险";
   const sellTaxText = data.taxEstimates?.sellTax || "无法估算";
   const sellTaxRisk = taxRiskLevel(sellTaxText);
+  const lpLockText = data.pool.lpLock?.summary || "未检测";
+  const lpLockRisk = lpLockRiskLevel(data.pool.lpLock);
   setProbeStatus(`检测完成：${riskText}`, data.risk === "high" ? "error" : "ok");
 
   const summary = document.createElement("div");
@@ -2766,6 +2961,7 @@ function renderProbeResult(data) {
   summary.append(
     createMetric("风险结论", riskText, `risk-value-${data.risk}`, `risk-card-${data.risk}`),
     createMetric("卖税估算", sellTaxText, `tax-value-${sellTaxRisk}`, `tax-card-${sellTaxRisk}`),
+    createMetric("LP锁定", lpLockText, `risk-value-${lpLockRisk}`, `risk-card-${lpLockRisk}`),
     createMetric("原交易", data.tx.hash),
     createMetric("原交易 To", data.tx.to || "无"),
     createMetric("方法", data.tx.selector),
@@ -2808,6 +3004,7 @@ function renderProbeResult(data) {
     createMetric("Hook 权限", hookFlagsText(data.pool.hookFlags || [])),
     createMetric("建池发起人", data.pool.poolInitializer || "未识别"),
     createMetric("Dev 建池", data.pool.devInitialized ? "是，高风险" : "未命中"),
+    createMetric("LP锁定", lpLockText, `risk-value-${lpLockRisk}`, `risk-card-${lpLockRisk}`),
     createMetric("日志池子候选", data.pool.logAddressCandidates[0] || "无")
   );
   resultEl.append(createSection("池子 / Hook", poolSummary));
