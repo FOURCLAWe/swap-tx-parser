@@ -47,6 +47,8 @@ const goPlusTokenSecurityUrl = "https://api.gopluslabs.io/api/v1/token_security/
 const honeypotCheckUrl = "https://api.honeypot.is/v2/IsHoneypot";
 const dexScreenerTokenUrl = "https://api.dexscreener.com/latest/dex/tokens";
 const blockscoutContractUrl = "https://eth.blockscout.com/api/v2/smart-contracts";
+const uniswapV4QuoterAddress = "0x52f0e24d1c21c8a0cb1e5a5dd6198556bd9e1203";
+const quoteExactInputSingleSelector = "0xaa9d21cb";
 const slippageDenominator = 10000n;
 const maxUint256 = 2n ** 256n - 1n;
 const v4HookFlagDefinitions = [
@@ -399,6 +401,12 @@ function bigIntToWord(value) {
   return bigint.toString(16).padStart(64, "0");
 }
 
+function bigIntToSignedWord(value) {
+  let bigint = typeof value === "bigint" ? value : BigInt(value);
+  if (bigint < 0n) bigint = (1n << 256n) + bigint;
+  return bigIntToWord(bigint);
+}
+
 function addressToWord(address) {
   if (!addressRegex.test(address)) throw new Error("Invalid EVM address");
   return strip0x(address).toLowerCase().padStart(64, "0");
@@ -436,6 +444,20 @@ function parseDecimals(value) {
     throw new Error("Decimals 范围必须是 0 到 255");
   }
   return decimals;
+}
+
+function parseBlockTag(value) {
+  const trimmed = String(value || "").trim();
+  if (!trimmed) return "latest";
+  if (/^0x[a-fA-F0-9]+$/.test(trimmed)) return normalizeHex(trimmed);
+  if (/^\d+$/.test(trimmed)) return `0x${BigInt(trimmed).toString(16)}`;
+  throw new Error("模拟区块必须是区块数字、0x 区块号，或留空");
+}
+
+function normalizeBytesInput(value) {
+  const clean = strip0x(String(value || "0x").trim());
+  if (clean && !/^[a-fA-F0-9]+$/.test(clean)) throw new Error("Hook Data 必须是十六进制");
+  return normalizeHex(`0x${clean}`);
 }
 
 function formatSlippageBps(bps) {
@@ -648,6 +670,51 @@ function decodeV4HookFlags(hookAddress) {
 
 function hookFlagsText(flags) {
   return flags?.length ? flags.join(", ") : "无";
+}
+
+function encodeAbiBytesWords(hexValue) {
+  const clean = strip0x(hexValue);
+  const byteLength = BigInt(clean.length / 2);
+  const paddedLength = Math.ceil(clean.length / 64) * 64;
+  return [bigIntToWord(byteLength), clean.padEnd(paddedLength, "0")].filter((word) => word.length);
+}
+
+function encodeV4QuoteExactInputSingle({ poolKey, zeroForOne, exactAmount, hookData }) {
+  const dynamicBytesOffset = 8n * 32n;
+  const words = [
+    bigIntToWord(32n),
+    addressToWord(poolKey.currency0),
+    addressToWord(poolKey.currency1),
+    bigIntToWord(poolKey.fee),
+    bigIntToSignedWord(poolKey.tickSpacing),
+    addressToWord(poolKey.hook),
+    bigIntToWord(zeroForOne ? 1n : 0n),
+    bigIntToWord(exactAmount),
+    bigIntToWord(dynamicBytesOffset),
+    ...encodeAbiBytesWords(hookData)
+  ];
+  return normalizeHex(`${quoteExactInputSingleSelector}${words.join("")}`);
+}
+
+function decodeV4QuoteResult(result) {
+  const words = splitDataWords(result);
+  if (words.length < 2) throw new Error("Quoter 返回格式异常");
+  return {
+    amountOut: hexToBigInt(words[0]),
+    gasEstimate: hexToBigInt(words[1])
+  };
+}
+
+function decimalAmountNumber(amountRaw, decimals = 18) {
+  const scale = 10 ** Number(decimals || 0);
+  if (!Number.isFinite(scale) || scale <= 0) return Number(amountRaw);
+  return Number(amountRaw) / scale;
+}
+
+function quoteLossText(ratio) {
+  if (ratio == null || !Number.isFinite(ratio)) return "无法估算";
+  const loss = Math.max(0, 1 - ratio) * 100;
+  return `${loss.toFixed(4).replace(/\.?0+$/, "")}%`;
 }
 
 function hexToUtf8(hexValue) {
@@ -1338,6 +1405,14 @@ async function getBlockscoutContract(address) {
   return fetchJsonWithTimeout(`${blockscoutContractUrl}/${address}`, 10000);
 }
 
+async function getCurrencyMeta(address, cache) {
+  const currency = normalizeAddress(address);
+  if (currency === zeroAddress) {
+    return { address: zeroAddress, name: "Ether", symbol: "ETH", decimals: 18 };
+  }
+  return getTokenMeta(currency, cache);
+}
+
 function parseV4InitializeLog(log) {
   if (!log || normalizeAddress(log.address || zeroAddress) !== v4PoolManagerAddress) return null;
   if (normalizeHex(log.topics?.[0] || "0x") !== v4InitializeTopic) return null;
@@ -1436,6 +1511,72 @@ function summarizeDexPair(pair) {
   return `${pair.dexId || "dex"}${labels} ${quote} 池：${pair.pairAddress}，流动性 ${liquidity}`;
 }
 
+function estimateDexExpectedOutput(pair, tokenIn, tokenOut, amountInRaw, tokenInDecimals, tokenOutDecimals) {
+  const priceNative = Number(pair?.priceNative);
+  if (!Number.isFinite(priceNative) || priceNative <= 0) return null;
+  const base = normalizeAddress(pair.baseToken?.address || zeroAddress);
+  const quote = normalizeAddress(pair.quoteToken?.address || zeroAddress);
+  const inAddress = normalizeAddress(tokenIn);
+  const outAddress = normalizeAddress(tokenOut);
+  const amountIn = decimalAmountNumber(amountInRaw, tokenInDecimals);
+  if (!Number.isFinite(amountIn) || amountIn <= 0) return null;
+
+  let expectedOut = null;
+  if (base === inAddress && quote === outAddress) expectedOut = amountIn * priceNative;
+  if (quote === inAddress && base === outAddress) expectedOut = amountIn / priceNative;
+  if (expectedOut == null || !Number.isFinite(expectedOut) || expectedOut <= 0) return null;
+
+  return {
+    expectedOut,
+    expectedOutRawApprox: expectedOut * 10 ** Number(tokenOutDecimals || 18)
+  };
+}
+
+async function quoteV4Sell({ poolInit, token, amountRaw, fromAddress, hookData, blockTag, metaCache }) {
+  const tokenIn = normalizeAddress(token);
+  const zeroForOne = normalizeAddress(poolInit.currency0) === tokenIn;
+  if (!zeroForOne && normalizeAddress(poolInit.currency1) !== tokenIn) {
+    throw new Error("所选 v4 池不包含该 token");
+  }
+
+  const tokenOut = zeroForOne ? normalizeAddress(poolInit.currency1) : normalizeAddress(poolInit.currency0);
+  const tokenOutMeta = await getCurrencyMeta(tokenOut, metaCache);
+  const data = encodeV4QuoteExactInputSingle({
+    poolKey: {
+      currency0: poolInit.currency0,
+      currency1: poolInit.currency1,
+      fee: BigInt(poolInit.fee),
+      tickSpacing: BigInt(poolInit.tickSpacing),
+      hook: poolInit.hook
+    },
+    zeroForOne,
+    exactAmount: amountRaw,
+    hookData
+  });
+
+  const tx = { to: uniswapV4QuoterAddress, data };
+  if (fromAddress) tx.from = normalizeAddress(fromAddress);
+  const result = await ethRpc("eth_call", [tx, blockTag || "latest"]);
+  const quote = decodeV4QuoteResult(result);
+  return {
+    ...quote,
+    tokenOut,
+    tokenOutMeta,
+    zeroForOne,
+    blockTag: blockTag || "latest"
+  };
+}
+
+function defaultProbeSellAmount(totalSupply, decimals = 18) {
+  const oneToken = 10n ** BigInt(decimals);
+  const thousandTokens = 1000n * oneToken;
+  if (totalSupply > 0n) {
+    const supplySlice = totalSupply / 100000n;
+    if (supplySlice > 0n && supplySlice < thousandTokens) return supplySlice < oneToken ? oneToken : supplySlice;
+  }
+  return thousandTokens;
+}
+
 function applyGoPlusFindings(security, warnings, positives) {
   if (!security) {
     warnings.push("GoPlus 没有返回该合约的完整风险数据。");
@@ -1519,8 +1660,9 @@ function applyHoneypotFindings(check, warnings, positives) {
   return { buyTax, sellTax, notes, highRisk };
 }
 
-async function analyzeTokenOnly(tokenAddress, holderAddress = "") {
+async function analyzeTokenOnly(tokenAddress, options = {}) {
   const token = normalizeAddress(tokenAddress);
+  const holderAddress = options.holderAddress || "";
   const metaCache = new Map();
   const meta = await getTokenMeta(token, metaCache);
   const externalChecks = [];
@@ -1573,6 +1715,13 @@ async function analyzeTokenOnly(tokenAddress, holderAddress = "") {
       warnings.push(`持币地址余额读取失败：${err instanceof Error ? err.message : String(err)}`);
     }
   }
+
+  const blockTag = parseBlockTag(options.blockTag);
+  const hookData = normalizeBytesInput(options.hookData || "0x");
+  const requestedSellAmount = String(options.sellAmount || "").trim()
+    ? parseDecimalToUnits(options.sellAmount, meta.decimals ?? 18)
+    : null;
+  const quoteAmountRaw = requestedSellAmount ?? defaultProbeSellAmount(totalSupply, meta.decimals ?? 18);
 
   const [goPlusResult, honeypotResult, dexResult] = await Promise.allSettled([
     getGoPlusSecurity(token),
@@ -1679,6 +1828,61 @@ async function analyzeTokenOnly(tokenAddress, holderAddress = "") {
           }
 
           try {
+            const quote = await quoteV4Sell({
+              poolInit,
+              token,
+              amountRaw: quoteAmountRaw,
+              fromAddress: holder,
+              hookData,
+              blockTag,
+              metaCache
+            });
+            const outText = `${formatUnits(quote.amountOut, quote.tokenOutMeta.decimals, 18)} ${quote.tokenOutMeta.symbol}`;
+            const inText = `${formatUnits(quoteAmountRaw, meta.decimals ?? 18, 8)} ${meta.symbol || "TOKEN"}`;
+            simulations.push({
+              label: "v4 Quoter 卖出报价",
+              ok: true,
+              text: `通过：卖出 ${inText}，Quoter 预计得到 ${outText}，gas ${quote.gasEstimate.toString()}`
+            });
+            positives.push("Uniswap v4 Quoter 当前能返回卖出报价。");
+            externalChecks.push(`v4 Quoter：卖出 ${inText} -> ${outText}（block ${blockTag}）`);
+
+            const expected = estimateDexExpectedOutput(
+              v4Pair,
+              token,
+              quote.tokenOut,
+              quoteAmountRaw,
+              meta.decimals ?? 18,
+              quote.tokenOutMeta.decimals
+            );
+            if (expected) {
+              const actualOut = decimalAmountNumber(quote.amountOut, quote.tokenOutMeta.decimals);
+              const ratio = actualOut / expected.expectedOut;
+              const lossText = quoteLossText(ratio);
+              externalChecks.push(`v4 Quoter / DexScreener 粗略对比：实际约为池价预期的 ${(ratio * 100).toFixed(4).replace(/\.?0+$/, "")}%`);
+              if (ratio < 0.1) {
+                warnings.push(`v4 Quoter 卖出报价明显偏低，疑似卖出损耗/税约 ${lossText}。`);
+                highRisk = true;
+                taxEstimates = {
+                  ...taxEstimates,
+                  sellTax: `约 ${lossText}（v4 Quoter 对比池价）`,
+                  notes: [...taxEstimates.notes, "卖税/损耗按 v4 Quoter 输出和 DexScreener 池价粗略对比，可能混入价格冲击。"]
+                };
+              } else if (ratio < 0.5) {
+                warnings.push(`v4 Quoter 卖出报价低于池价预期，可能有卖税、Hook 扣减或大额价格冲击，损耗约 ${lossText}。`);
+              }
+            }
+          } catch (err) {
+            simulations.push({
+              label: "v4 Quoter 卖出报价",
+              ok: false,
+              text: `失败：v4 Quoter 卖出报价 revert / 失败：${err instanceof Error ? err.message : String(err)}`
+            });
+            warnings.push("v4 Quoter 卖出报价失败，当前参数下可能无法卖出；如 Hook 依赖 hookData/from，请填入持币地址和 Hook Data 再测。");
+            highRisk = true;
+          }
+
+          try {
             const swapStats = await getV4SwapStats(poolInit.poolId, poolInit, token);
             const ratioText =
               swapStats.sellToBuyRatio == null ? "不足以比较" : `${swapStats.sellToBuyRatio.toFixed(4).replace(/\.?0+$/, "")}x`;
@@ -1732,7 +1936,7 @@ async function analyzeTokenOnly(tokenAddress, holderAddress = "") {
     },
     holder,
     holderBalance: formatUnits(holderBalance, meta.decimals ?? 18, 8),
-    probeAmount: "0",
+    probeAmount: formatUnits(quoteAmountRaw, meta.decimals ?? 18, 8),
     pool,
     transfers: [],
     simulations,
@@ -1746,7 +1950,7 @@ async function analyzeTokenOnly(tokenAddress, holderAddress = "") {
 
 async function analyzeProbe(payload) {
   if (payload.tokenAddress && !payload.txHash) {
-    return analyzeTokenOnly(payload.tokenAddress, payload.holderAddress);
+    return analyzeTokenOnly(payload.tokenAddress, payload);
   }
 
   const [tx, receipt] = await Promise.all([
@@ -2303,7 +2507,7 @@ function renderProbeResult(data) {
   }
 
   probeSubmitButton.disabled = false;
-  probeSubmitButton.textContent = "解析池子并预检";
+  probeSubmitButton.textContent = "检测风险";
   setView("result");
 }
 
@@ -2327,7 +2531,7 @@ function renderProbeError(error, details) {
   box.textContent = details ? `${error}: ${details}` : error;
   resultEl.append(box);
   probeSubmitButton.disabled = false;
-  probeSubmitButton.textContent = "解析池子并预检";
+  probeSubmitButton.textContent = "检测风险";
   setView("result");
 }
 
@@ -2381,6 +2585,9 @@ probeForm.addEventListener("submit", async (event) => {
   const tokenAddress = txHash ? "" : extractAddress(subject);
   const holderAddress = extractAddress(formData.get("probeHolderAddress"));
   const rawHolder = String(formData.get("probeHolderAddress") || "").trim();
+  const sellAmount = String(formData.get("probeSellAmount") || "").trim();
+  const blockTag = String(formData.get("probeBlock") || "").trim();
+  const hookData = String(formData.get("probeHookData") || "0x").trim();
 
   if (!txHash && !tokenAddress) {
     renderProbeError("输入不完整", "请粘贴完整 buy/mint tx、Etherscan 交易链接，或代币合约地址。");
@@ -2393,11 +2600,11 @@ probeForm.addEventListener("submit", async (event) => {
 
   probeSubmitButton.disabled = true;
   probeSubmitButton.textContent = "检测中...";
-  setProbeStatus(txHash ? "正在读取交易日志、识别池子，并用 eth_call 做预检。" : "正在读取代币合约信息。");
+  setProbeStatus(txHash ? "正在读取交易日志、识别池子，并用 eth_call 做预检。" : "正在读取代币合约、v4 池子，并用 Quoter 做卖出报价。");
   setView("loading");
 
   try {
-    const data = await analyzeProbe({ txHash, tokenAddress, holderAddress });
+    const data = await analyzeProbe({ txHash, tokenAddress, holderAddress, sellAmount, blockTag, hookData });
     renderProbeResult(data);
   } catch (err) {
     renderProbeError("检测失败", err instanceof Error ? err.message : String(err));

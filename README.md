@@ -26,9 +26,11 @@ With a transaction it estimates visible buy/sell tax from transfer logs,
 identifies v4 PoolManager/PoolId candidates and possible Hook/router addresses,
 then uses `eth_call` to preflight current buy, approve, and token
 transfer-to-pool behavior. Contract-only mode now also queries GoPlus,
-Honeypot.is, DexScreener pairs, and v4 PoolManager initialization logs so v4
-Hook pools are surfaced even when the ERC20 itself is plain. Exact taxes still
-need transaction logs or a forked simulation.
+Honeypot.is, DexScreener pairs, v4 PoolManager initialization logs, and the
+Uniswap v4 Quoter. For v4 pools it can quote an exact-input sell and compare
+the output with the current pool price to flag severe sell-side loss even when
+the ERC20 itself is plain. Exact taxes still need transaction logs or a forked
+simulation.
 
 The tools are separated behind a top navigation bar so only one form is visible
 at a time.
