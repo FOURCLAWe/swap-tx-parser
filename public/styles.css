@@ -51,6 +51,14 @@ textarea {
   margin-bottom: 18px;
 }
 
+.top-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 .eyebrow {
   margin: 0 0 6px;
   color: var(--green);
@@ -589,6 +597,10 @@ textarea {
   .topbar {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .top-actions {
+    justify-content: flex-start;
   }
 
   .workspace {

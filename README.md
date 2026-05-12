@@ -19,3 +19,4 @@ transaction from a token address, spender/router address, amount, and decimals.
 The left rail is ordered as parser, approval builder, then sender.
 Parsed results include fill buttons that write the generated transaction into
 the hex sender fields.
+The wallet connect button lives in the top-right header.
