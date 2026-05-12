@@ -267,8 +267,8 @@ function setSenderQueue(steps, options = {}) {
     const firstLabel = formatSenderStepLabel(0);
     const status =
       senderSteps.length > 1
-        ? "已自动填入授权 approve。授权成功上链后，再点步骤 2 填入卖出 swap。"
-        : `${firstLabel} 已自动填入发送器，检查后点击发送交易。`;
+        ? "已自动填入授权 approve 的 To 和 Data。金额框不会自动填；授权上链后，再点步骤 2 填入卖出 swap。"
+        : `${firstLabel} 已自动填入 To 和 Data，金额框请手动填写。`;
     fillSender(senderSteps[0].tx, firstLabel, { scroll: false, status });
   }
 }
@@ -276,14 +276,14 @@ function setSenderQueue(steps, options = {}) {
 function fillSender(txPayload, label = "交易", options = {}) {
   if (!txPayload) return;
   sendToInput.value = txPayload.to || "";
-  sendValueInput.value = txPayload.valueEth || "0";
+  sendValueInput.value = "";
   sendDataInput.value = txPayload.data || "0x";
   const stepIndex = findSenderStepIndex(txPayload);
   if (stepIndex >= 0) {
     activeSenderStepIndex = stepIndex;
     renderSenderSteps();
   }
-  setSenderStatus(options.status || `${label} 已填入发送器，检查后点击发送交易。`, "ok");
+  setSenderStatus(options.status || `${label} 已填入 To 和 Data，金额框请手动填写。`, "ok");
   if (options.scroll !== false) {
     document.querySelector("#hex-sender")?.scrollIntoView({ behavior: "smooth", block: "start" });
     sendToInput.focus();
@@ -1208,7 +1208,7 @@ function renderResult(data) {
       generatedWrap.append(
         createCopyGroup("1. 授权 approve", [
           { label: "To", value: data.generated.approve.to },
-          { label: "Value ETH", value: data.generated.approve.valueEth },
+          { label: "ETH 金额参考", value: data.generated.approve.valueEth },
           { label: "Value Wei", value: data.generated.approve.valueWei },
           { label: "Data", value: data.generated.approve.data, tall: true }
         ], data.generated.approve)
@@ -1218,7 +1218,7 @@ function renderResult(data) {
     generatedWrap.append(
       createCopyGroup(data.generated.approve ? "2. 卖出 swap" : isSell ? "卖出 swap" : "买入 swap", [
         { label: "To", value: data.generated.to },
-        { label: "Value ETH", value: data.generated.valueEth },
+        { label: isSell ? "ETH 金额参考" : "购买ETH金额参考", value: data.generated.valueEth },
         { label: "Value Wei", value: data.generated.valueWei },
         { label: "Data", value: data.generated.data, tall: true }
       ], data.generated)
@@ -1330,7 +1330,7 @@ sendTransactionButton.addEventListener("click", async () => {
     if (!to) throw new Error("To 地址不完整");
     const value = decimalEthToHex(sendValueInput.value);
     const data = normalizeTxData(sendDataInput.value);
-    const ok = window.confirm(`确认发送交易？\n\nTo: ${to}\nValue: ${sendValueInput.value || "0"} ETH`);
+    const ok = window.confirm(`确认发送交易？\n\nTo: ${to}\n购买ETH金额: ${sendValueInput.value || "0"} ETH`);
     if (!ok) return;
 
     sendTransactionButton.disabled = true;
