@@ -1405,6 +1405,11 @@ async function getBlockscoutContract(address) {
   return fetchJsonWithTimeout(`${blockscoutContractUrl}/${address}`, 10000);
 }
 
+async function getTransactionSender(txHash) {
+  const tx = await ethRpc("eth_getTransactionByHash", [normalizeHex(txHash)]);
+  return tx?.from ? normalizeAddress(tx.from) : "";
+}
+
 async function getCurrencyMeta(address, cache) {
   const currency = normalizeAddress(address);
   if (currency === zeroAddress) {
@@ -1673,6 +1678,7 @@ async function analyzeTokenOnly(tokenAddress, options = {}) {
   const warnings = [];
   const positives = [];
   const simulations = [];
+  let tokenCreator = "";
   let highRisk = false;
   let pool = {
     protocol: "仅合约检测",
@@ -1731,10 +1737,11 @@ async function analyzeTokenOnly(tokenAddress, options = {}) {
 
   if (goPlusResult.status === "fulfilled") {
     const security = goPlusResult.value;
+    tokenCreator = security?.creator_address ? normalizeAddress(security.creator_address) : "";
     if (security?.token_symbol && !meta.symbol) meta.symbol = security.token_symbol;
     if (security?.token_name && !meta.name) meta.name = security.token_name;
     const goPlus = applyGoPlusFindings(security, warnings, positives);
-    externalChecks.push("GoPlus Token Security：已查询");
+    externalChecks.push(`GoPlus Token Security：已查询${tokenCreator ? `，创建者 ${tokenCreator}` : ""}`);
     highRisk ||= goPlus.highRisk;
     if (goPlus.buyTax !== "未知" || goPlus.sellTax !== "未知") {
       taxEstimates = {
@@ -1798,6 +1805,23 @@ async function analyzeTokenOnly(tokenAddress, options = {}) {
           externalChecks.push(
             `PoolManager 初始化：fee ${poolInit.fee}，tickSpacing ${poolInit.tickSpacing}，Hook ${hasHook ? poolInit.hook : "无"}`
           );
+
+          if (poolInit.transactionHash) {
+            try {
+              const poolInitializer = await getTransactionSender(poolInit.transactionHash);
+              if (poolInitializer) {
+                pool = { ...pool, poolInitializer };
+                externalChecks.push(`v4 建池交易发起人：${poolInitializer}`);
+                if (tokenCreator && poolInitializer === tokenCreator) {
+                  warnings.push("v4 池子由代币创建者 / Dev 手动初始化，按高风险处理。");
+                  highRisk = true;
+                  pool = { ...pool, devInitialized: true };
+                }
+              }
+            } catch (err) {
+              externalChecks.push(`v4 建池交易发起人查询失败：${err instanceof Error ? err.message : String(err)}`);
+            }
+          }
 
           if (hasHook) {
             const hookFlagText = hookFlagsText(poolInit.hookFlags);
@@ -2189,9 +2213,9 @@ function shortAddress(value) {
   return `${value.slice(0, 6)}...${value.slice(-4)}`;
 }
 
-function createMetric(label, value, extraClass = "") {
+function createMetric(label, value, extraClass = "", itemClass = "") {
   const item = document.createElement("div");
-  item.className = "metric";
+  item.className = `metric ${itemClass}`.trim();
   const labelEl = document.createElement("span");
   labelEl.className = "metric-label";
   labelEl.textContent = label;
@@ -2428,7 +2452,7 @@ function renderProbeResult(data) {
   const summary = document.createElement("div");
   summary.className = "summary-grid";
   summary.append(
-    createMetric("风险结论", riskText),
+    createMetric("风险结论", riskText, `risk-value-${data.risk}`, `risk-card-${data.risk}`),
     createMetric("原交易", data.tx.hash),
     createMetric("原交易 To", data.tx.to || "无"),
     createMetric("方法", data.tx.selector),
@@ -2469,6 +2493,8 @@ function renderProbeResult(data) {
     createMetric("PoolId 候选", data.pool.poolIdCandidates[0] || "无"),
     createMetric("疑似 Hook", data.pool.hookCandidates[0] || "无"),
     createMetric("Hook 权限", hookFlagsText(data.pool.hookFlags || [])),
+    createMetric("建池发起人", data.pool.poolInitializer || "未识别"),
+    createMetric("Dev 建池", data.pool.devInitialized ? "是，高风险" : "未命中"),
     createMetric("日志池子候选", data.pool.logAddressCandidates[0] || "无")
   );
   resultEl.append(createSection("池子 / Hook", poolSummary));

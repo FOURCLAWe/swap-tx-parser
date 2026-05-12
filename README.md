@@ -29,8 +29,9 @@ transfer-to-pool behavior. Contract-only mode now also queries GoPlus,
 Honeypot.is, DexScreener pairs, v4 PoolManager initialization logs, and the
 Uniswap v4 Quoter. For v4 pools it can quote an exact-input sell and compare
 the output with the current pool price to flag severe sell-side loss even when
-the ERC20 itself is plain. Exact taxes still need transaction logs or a forked
-simulation.
+the ERC20 itself is plain. If the v4 pool initialization transaction was sent by
+the token creator, the result is marked high risk as a dev-created pool. Exact
+taxes still need transaction logs or a forked simulation.
 
 The tools are separated behind a top navigation bar so only one form is visible
 at a time.
