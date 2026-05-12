@@ -2607,30 +2607,20 @@ probeForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const formData = new FormData(probeForm);
   const subject = String(formData.get("probeSubject") || "").trim();
-  const txHash = extractTxHash(subject);
-  const tokenAddress = txHash ? "" : extractAddress(subject);
-  const holderAddress = extractAddress(formData.get("probeHolderAddress"));
-  const rawHolder = String(formData.get("probeHolderAddress") || "").trim();
-  const sellAmount = String(formData.get("probeSellAmount") || "").trim();
-  const blockTag = String(formData.get("probeBlock") || "").trim();
-  const hookData = String(formData.get("probeHookData") || "0x").trim();
+  const tokenAddress = extractAddress(subject);
 
-  if (!txHash && !tokenAddress) {
-    renderProbeError("输入不完整", "请粘贴完整 buy/mint tx、Etherscan 交易链接，或代币合约地址。");
-    return;
-  }
-  if (rawHolder && !holderAddress) {
-    renderProbeError("持币地址不完整", "持币地址格式应该是 0x + 40 位十六进制。");
+  if (!tokenAddress) {
+    renderProbeError("输入不完整", "请粘贴完整代币合约地址，格式是 0x + 40 位十六进制。");
     return;
   }
 
   probeSubmitButton.disabled = true;
   probeSubmitButton.textContent = "检测中...";
-  setProbeStatus(txHash ? "正在读取交易日志、识别池子，并用 eth_call 做预检。" : "正在读取代币合约、v4 池子，并用 Quoter 做卖出报价。");
+  setProbeStatus("正在读取代币合约、v4 池子，并用 Quoter 做卖出报价。");
   setView("loading");
 
   try {
-    const data = await analyzeProbe({ txHash, tokenAddress, holderAddress, sellAmount, blockTag, hookData });
+    const data = await analyzeProbe({ tokenAddress });
     renderProbeResult(data);
   } catch (err) {
     renderProbeError("检测失败", err instanceof Error ? err.message : String(err));

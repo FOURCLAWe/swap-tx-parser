@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Swap Tx Parser</title>
-    <link rel="stylesheet" href="./styles.css?v=18" />
+    <link rel="stylesheet" href="./styles.css?v=19" />
   </head>
   <body>
     <main class="shell">
@@ -37,48 +37,20 @@
             </div>
 
             <label class="field">
-              <span>最早买入 tx / 代币合约</span>
+              <span>代币合约</span>
               <input
                 id="probe-subject"
                 name="probeSubject"
                 autocomplete="off"
                 spellcheck="false"
-                placeholder="0x... tx 或 0x... token"
+                placeholder="0x... token"
                 required
               />
             </label>
 
-            <label class="field">
-              <span>持币 / From 地址（可选）</span>
-              <input
-                id="probe-holder-address"
-                name="probeHolderAddress"
-                autocomplete="off"
-                spellcheck="false"
-                placeholder="Quoter eth_call 的 from，可留空"
-              />
-            </label>
-
-            <div class="inline-fields">
-              <label class="field">
-                <span>卖出模拟数量（可选）</span>
-                <input id="probe-sell-amount" name="probeSellAmount" inputmode="decimal" placeholder="默认自动取样" />
-              </label>
-
-              <label class="field">
-                <span>模拟区块（可选）</span>
-                <input id="probe-block" name="probeBlock" inputmode="numeric" placeholder="latest" />
-              </label>
-            </div>
-
-            <label class="field">
-              <span>Hook Data（可选）</span>
-              <input id="probe-hook-data" name="probeHookData" autocomplete="off" spellcheck="false" value="0x" />
-            </label>
-
             <button class="primary-btn" type="submit">检测风险</button>
-            <p class="form-status" id="probe-status">输入最早买入 tx 可估买税；只输入合约会查风险接口、v4 Hook，并用 Quoter 做卖出报价。</p>
-            <p class="mini-note">Quoter 是快速筛查，不等同完整 router 回放；如果 Hook 依赖 from 或 hookData，请填上再测。</p>
+            <p class="form-status" id="probe-status">填入代币合约，自动检测风险接口、v4 Hook、Dev 建池和 Quoter 卖出报价。</p>
+            <p class="mini-note">只做快速筛查，不发送交易；检测参数由工具自动取默认值。</p>
           </form>
 
           <form class="panel form-panel tool-panel" id="analyze-form" data-tool-panel="parser" hidden>
@@ -243,6 +215,6 @@
       </div>
     </template>
 
-    <script src="./app.js?v=18" type="module"></script>
+    <script src="./app.js?v=19" type="module"></script>
   </body>
 </html>

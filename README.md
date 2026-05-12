@@ -21,17 +21,14 @@ Parsed results include fill buttons that write the generated transaction into
 the hex sender fields.
 The wallet connect button lives in the top-right header.
 
-The risk monitor accepts an early buy/mint transaction or a token contract.
-With a transaction it estimates visible buy/sell tax from transfer logs,
-identifies v4 PoolManager/PoolId candidates and possible Hook/router addresses,
-then uses `eth_call` to preflight current buy, approve, and token
-transfer-to-pool behavior. Contract-only mode now also queries GoPlus,
+The risk monitor only asks for a token contract. It queries GoPlus,
 Honeypot.is, DexScreener pairs, v4 PoolManager initialization logs, and the
-Uniswap v4 Quoter. For v4 pools it can quote an exact-input sell and compare
-the output with the current pool price to flag severe sell-side loss even when
-the ERC20 itself is plain. If the v4 pool initialization transaction was sent by
-the token creator, the result is marked high risk as a dev-created pool. Exact
-taxes still need transaction logs or a forked simulation.
+Uniswap v4 Quoter with automatic defaults. For v4 pools it can quote an
+exact-input sell and compare the output with the current pool price to flag
+severe sell-side loss even when the ERC20 itself is plain. If the v4 pool
+initialization transaction was sent by the token creator, the result is marked
+high risk as a dev-created pool. Exact taxes still need transaction logs or a
+forked simulation.
 
 The tools are separated behind a top navigation bar so only one form is visible
 at a time.
