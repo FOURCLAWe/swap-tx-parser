@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Swap Tx Parser</title>
-    <link rel="stylesheet" href="./styles.css?v=20" />
+    <link rel="stylesheet" href="./styles.css?v=21" />
   </head>
   <body>
     <main class="shell">
@@ -126,6 +126,16 @@
             </div>
 
             <label class="field">
+              <span>授权 tx（可选）</span>
+              <input id="approval-tx" autocomplete="off" spellcheck="false" placeholder="0x... 或 Etherscan 链接" />
+            </label>
+
+            <div class="approval-actions">
+              <button class="load-btn" id="parse-approval" type="button">解析授权 tx</button>
+              <button class="primary-btn direct-approve-btn" id="parse-and-approve" type="button">解析并授权</button>
+            </div>
+
+            <label class="field">
               <span>Token 合约</span>
               <input id="approve-token" autocomplete="off" spellcheck="false" placeholder="0x..." />
             </label>
@@ -152,7 +162,7 @@
               <span>最大授权</span>
             </label>
 
-            <p class="mini-note">不知道 Spender 时，先用一笔成功卖出 tx 解析，工具会自动带出授权。</p>
+            <p class="mini-note">不知道 Spender 时，粘一笔标准 approve 授权 tx，工具会解析出 Token、Spender 和授权数量。</p>
           </section>
 
           <section class="panel sender-panel tool-panel" id="hex-sender" data-tool-panel="sender" hidden>
@@ -216,6 +226,6 @@
       </div>
     </template>
 
-    <script src="./app.js?v=20" type="module"></script>
+    <script src="./app.js?v=21" type="module"></script>
   </body>
 </html>

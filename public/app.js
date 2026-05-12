@@ -29,6 +29,9 @@ const approveAmountInput = document.querySelector("#approve-amount");
 const approveDecimalsInput = document.querySelector("#approve-decimals");
 const approveMaxInput = document.querySelector("#approve-max");
 const buildApprovalButton = document.querySelector("#build-approval");
+const approvalTxInput = document.querySelector("#approval-tx");
+const parseApprovalButton = document.querySelector("#parse-approval");
+const parseAndApproveButton = document.querySelector("#parse-and-approve");
 const toolNavButtons = [...document.querySelectorAll("[data-tool-target]")];
 const toolPanels = [...document.querySelectorAll("[data-tool-panel]")];
 
@@ -50,6 +53,7 @@ const dexScreenerTokenUrl = "https://api.dexscreener.com/latest/dex/tokens";
 const blockscoutContractUrl = "https://eth.blockscout.com/api/v2/smart-contracts";
 const uniswapV4QuoterAddress = "0x52f0e24d1c21c8a0cb1e5a5dd6198556bd9e1203";
 const quoteExactInputSingleSelector = "0xaa9d21cb";
+const approveSelector = "0x095ea7b3";
 const slippageDenominator = 10000n;
 const maxUint256 = 2n ** 256n - 1n;
 const v4HookFlagDefinitions = [
@@ -354,27 +358,132 @@ function fillSender(txPayload, label = "交易", options = {}) {
   }
 }
 
+function setApprovalBusy(isBusy, direct = false) {
+  if (buildApprovalButton) buildApprovalButton.disabled = isBusy;
+  if (parseApprovalButton) parseApprovalButton.disabled = isBusy;
+  if (parseAndApproveButton) {
+    parseAndApproveButton.disabled = isBusy;
+    parseAndApproveButton.textContent = isBusy ? (direct ? "等待钱包..." : "解析中...") : "解析并授权";
+  }
+}
+
+function buildApprovalFromFields() {
+  const token = extractAddress(approveTokenInput.value);
+  const spender = extractAddress(approveSpenderInput.value);
+  if (!token) throw new Error("Token 合约地址不完整");
+  if (!spender) throw new Error("Spender / 路由地址不完整");
+
+  const decimals = parseDecimals(approveDecimalsInput.value);
+  const amountRaw = approveMaxInput.checked
+    ? maxUint256
+    : parseDecimalToUnits(approveAmountInput.value, decimals);
+  if (amountRaw == null) throw new Error("请填写授权数量，或者勾选最大授权");
+
+  return buildApproveTransaction(token, spender, amountRaw, {
+    decimals,
+    symbol: approveMaxInput.checked ? "MAX" : "TOKEN"
+  });
+}
+
+function decodeApproveCalldata(input) {
+  const data = normalizeHex(input || "0x");
+  if (data.slice(0, 10) !== approveSelector) throw new Error("这不是标准 ERC20 approve(address,uint256) 交易");
+  const words = splitWordsFromCalldata(data);
+  if (words.length < 2) throw new Error("approve calldata 不完整");
+  return {
+    spender: wordToAddress(words[0]),
+    amountRaw: hexToBigInt(words[1])
+  };
+}
+
+async function parseApprovalTransaction(txHash) {
+  const tx = await ethRpc("eth_getTransactionByHash", [normalizeHex(txHash)]);
+  if (!tx) throw new Error("RPC 没查到这笔授权交易");
+  if (!tx.to) throw new Error("这笔交易没有 Token 合约 To 地址");
+
+  const decoded = decodeApproveCalldata(tx.input || "0x");
+  const token = normalizeAddress(tx.to);
+  const meta = await getTokenMeta(token, new Map());
+  const receipt = await ethRpc("eth_getTransactionReceipt", [normalizeHex(txHash)]).catch(() => null);
+  return {
+    txHash: normalizeHex(tx.hash),
+    status: receipt?.status === "0x1" ? "success" : receipt?.status === "0x0" ? "failed" : "unknown",
+    token,
+    spender: decoded.spender,
+    amountRaw: decoded.amountRaw,
+    decimals: meta.decimals ?? 18,
+    symbol: meta.symbol || "TOKEN"
+  };
+}
+
+function applyParsedApproval(info) {
+  approveTokenInput.value = info.token;
+  approveSpenderInput.value = info.spender;
+  approveDecimalsInput.value = String(info.decimals);
+  if (info.amountRaw === maxUint256) {
+    approveMaxInput.checked = true;
+    approveAmountInput.value = "";
+  } else {
+    approveMaxInput.checked = false;
+    approveAmountInput.value = formatUnits(info.amountRaw, info.decimals, 18);
+  }
+
+  const approveTx = buildApproveTransaction(info.token, info.spender, info.amountRaw, {
+    decimals: info.decimals,
+    symbol: info.symbol
+  });
+  clearSenderQueue();
+  fillSender(approveTx, "授权 approve", {
+    showSender: false,
+    scroll: false,
+    status: `已解析授权 tx：${info.symbol} -> ${shortAddress(info.spender)}，已生成 approve data。`
+  });
+  return approveTx;
+}
+
+async function parseApprovalInput() {
+  const txHash = extractTxHash(approvalTxInput?.value || "");
+  if (!txHash) {
+    return buildApprovalFromFields();
+  }
+  const info = await parseApprovalTransaction(txHash);
+  if (info.status === "failed") throw new Error("这笔授权 tx 是失败状态，已停止解析");
+  return applyParsedApproval(info);
+}
+
 function buildManualApproval() {
   try {
-    const token = extractAddress(approveTokenInput.value);
-    const spender = extractAddress(approveSpenderInput.value);
-    if (!token) throw new Error("Token 合约地址不完整");
-    if (!spender) throw new Error("Spender / 路由地址不完整");
-
-    const decimals = parseDecimals(approveDecimalsInput.value);
-    const amountRaw = approveMaxInput.checked
-      ? maxUint256
-      : parseDecimalToUnits(approveAmountInput.value, decimals);
-    if (amountRaw == null) throw new Error("请填写授权数量，或者勾选最大授权");
-
-    const approveTx = buildApproveTransaction(token, spender, amountRaw, {
-      decimals,
-      symbol: approveMaxInput.checked ? "MAX" : "TOKEN"
-    });
+    const approveTx = buildApprovalFromFields();
     clearSenderQueue();
     fillSender(approveTx, "授权 approve");
   } catch (err) {
     setSenderStatus(err instanceof Error ? err.message : String(err), "error");
+  }
+}
+
+async function handleParseApproval({ direct = false } = {}) {
+  try {
+    setApprovalBusy(true, direct);
+    const txHash = extractTxHash(approvalTxInput?.value || "");
+    const approveTx = await parseApprovalInput();
+    if (!direct) {
+      clearSenderQueue();
+      fillSender(approveTx, "授权 approve", {
+        status: txHash ? `已解析授权 tx：${approveTx.symbol} -> ${shortAddress(approveTx.spender)}，已填入 To 和 Data。` : undefined
+      });
+      return;
+    }
+
+    const hash = await sendTxPayloadWithWallet(approveTx, "授权 approve");
+    if (!hash) {
+      setSenderStatus("已生成授权，已取消发送。", "error");
+      return;
+    }
+    setSenderStatus(`已提交授权交易：${hash}`, "ok");
+  } catch (err) {
+    setSenderStatus(err instanceof Error ? err.message : String(err), "error");
+  } finally {
+    setApprovalBusy(false);
   }
 }
 
@@ -846,7 +955,7 @@ function buildApproveTransaction(token, spender, amountRaw, tokenMeta = {}) {
     to: normalizeAddress(token),
     valueWei: "0",
     valueEth: "0",
-    data: encodeStaticWords("0x095ea7b3", [addressToWord(spender), bigIntToWord(amount)]),
+    data: encodeStaticWords(approveSelector, [addressToWord(spender), bigIntToWord(amount)]),
     spender: normalizeAddress(spender),
     amountRaw: amount.toString(),
     amount: formatUnits(amount, tokenMeta.decimals ?? 18, 8),
@@ -2754,6 +2863,8 @@ for (const button of toolNavButtons) {
 }
 
 buildApprovalButton.addEventListener("click", buildManualApproval);
+parseApprovalButton?.addEventListener("click", () => handleParseApproval({ direct: false }));
+parseAndApproveButton?.addEventListener("click", () => handleParseApproval({ direct: true }));
 
 sendTransactionButton.addEventListener("click", async () => {
   const provider = getProvider();

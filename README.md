@@ -21,6 +21,10 @@ leaving the ETH amount for manual entry. In sell mode, generated approval and sw
 transactions are shown as sender steps, and the approval is filled first.
 There is also a manual approval builder for generating an ERC20 `approve`
 transaction from a token address, spender/router address, amount, and decimals.
+If the spender is hard to find, paste a prior standard approve transaction in
+the approval tool to fill Token, Spender, decimals, and amount automatically.
+The approval tool can also parse and submit that generated approve transaction
+through the connected wallet after confirmation.
 Parsed results include fill buttons that write the generated transaction into
 the hex sender fields.
 The wallet connect button lives in the top-right header.

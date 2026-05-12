@@ -359,6 +359,18 @@ h3 {
   background: var(--green-2);
 }
 
+.direct-approve-btn {
+  min-height: 38px;
+  color: #06100b;
+  background: var(--green);
+}
+
+.approval-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
 .mini-note {
   margin: -4px 0 0;
   color: var(--muted);
