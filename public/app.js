@@ -121,6 +121,10 @@ function extractAddress(value) {
   return match ? match[0] : "";
 }
 
+function isStrictAddress(value) {
+  return /^0x[a-fA-F0-9]{40}$/.test(String(value || "").trim());
+}
+
 function setFormStatus(message, state = "") {
   formStatus.textContent = message;
   formStatus.className = `form-status ${state}`.trim();
@@ -776,6 +780,12 @@ function taxPercentNumber(value) {
   return Math.abs(number) <= 1 ? number * 100 : number;
 }
 
+function directPercentNumber(value) {
+  if (value == null || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
 function isRiskFlag(value) {
   return value === true || value === 1 || value === "1" || String(value).toLowerCase() === "true";
 }
@@ -847,6 +857,37 @@ function taxRiskLevel(taxText) {
   if (percent >= 50) return "high";
   if (percent >= 10) return "medium";
   return "low";
+}
+
+function mergeTaxEstimateValue(currentValue, candidateValue, source) {
+  if (!candidateValue || candidateValue === "未知") return currentValue;
+  const candidateText = source && !String(candidateValue).includes("（") ? `${candidateValue}（${source}）` : String(candidateValue);
+  const currentPercent = parsePercentFromText(currentValue);
+  const candidatePercent = parsePercentFromText(candidateText);
+  if (candidatePercent == null) return currentPercent == null ? candidateText : currentValue;
+  if (currentPercent == null || candidatePercent >= currentPercent) return candidateText;
+  return currentValue;
+}
+
+function mergeTaxEstimates(current, candidate, source) {
+  return {
+    buyTax: mergeTaxEstimateValue(current.buyTax, candidate.buyTax, source),
+    sellTax: mergeTaxEstimateValue(current.sellTax, candidate.sellTax, source),
+    notes: [...(current.notes || []), ...(candidate.notes || [])]
+  };
+}
+
+function numberToDecimalString(value, maxFraction = 18) {
+  if (!Number.isFinite(value) || value <= 0 || value >= 1e21 || value < 1e-18) return "";
+  return value.toLocaleString("en-US", {
+    useGrouping: false,
+    maximumFractionDigits: maxFraction
+  });
+}
+
+function numberToUnits(value, decimals = 18) {
+  const text = numberToDecimalString(value, Math.min(Number(decimals) || 18, 18));
+  return text ? parseDecimalToUnits(text, decimals) : null;
 }
 
 function hexToUtf8(hexValue) {
@@ -1518,8 +1559,12 @@ async function getGoPlusSecurity(token) {
   return key ? result[key] : null;
 }
 
-async function getHoneypotCheck(token) {
-  return fetchJsonWithTimeout(`${honeypotCheckUrl}?address=${token}&chainID=1`);
+async function getHoneypotCheck(token, pairAddress = "") {
+  const url = new URL(honeypotCheckUrl);
+  url.searchParams.set("address", token);
+  url.searchParams.set("chainID", "1");
+  if (isStrictAddress(pairAddress)) url.searchParams.set("pair", normalizeAddress(pairAddress));
+  return fetchJsonWithTimeout(url.toString());
 }
 
 async function getDexScreenerPairs(token) {
@@ -1604,7 +1649,7 @@ function classifyV4Swap(log, poolInit, token) {
   const tokenAmount = tokenIsCurrency0 ? amount0 : amount1;
   const pairedAmount = tokenIsCurrency0 ? amount1 : amount0;
   if (tokenAmount === 0n || pairedAmount === 0n) return null;
-  const type = tokenAmount > 0n ? "buy" : "sell";
+  const type = tokenAmount > 0n ? "sell" : "buy";
   const price = Number(pairedAmount < 0n ? -pairedAmount : pairedAmount) / Number(tokenAmount < 0n ? -tokenAmount : tokenAmount);
   return Number.isFinite(price) ? { type, price } : { type, price: null };
 }
@@ -1714,6 +1759,31 @@ function defaultProbeSellAmount(totalSupply, decimals = 18) {
   return thousandTokens;
 }
 
+function chooseProbeSellAmounts({ requestedAmount, fallbackAmount, totalSupply, decimals = 18, pair }) {
+  if (requestedAmount) return [requestedAmount];
+
+  const oneToken = 10n ** BigInt(decimals);
+  const candidates = [oneToken, fallbackAmount].filter((amount) => amount && amount > 0n);
+  const priceUsd = Number(pair?.priceUsd || 0);
+  const liquidityUsd = Number(pair?.liquidity?.usd || 0);
+  if (Number.isFinite(priceUsd) && priceUsd > 0) {
+    const liquidityCap = Number.isFinite(liquidityUsd) && liquidityUsd > 0 ? Math.max(1, liquidityUsd * 0.0005) : 10;
+    for (const targetUsd of [1, 5, Math.min(25, liquidityCap)]) {
+      const raw = numberToUnits(targetUsd / priceUsd, decimals);
+      if (raw && raw > 0n) candidates.push(raw);
+    }
+  }
+
+  const maxReasonable = totalSupply > 0n ? totalSupply / 1000n : 0n;
+  const filtered = uniq(
+    candidates
+      .filter((amount) => amount > 0n && (!maxReasonable || amount <= maxReasonable || amount === oneToken))
+      .map((amount) => amount.toString())
+  ).map((amount) => BigInt(amount));
+
+  return filtered.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)).slice(0, 4);
+}
+
 function applyGoPlusFindings(security, warnings, positives) {
   if (!security) {
     warnings.push("GoPlus 没有返回该合约的完整风险数据。");
@@ -1771,20 +1841,61 @@ function applyGoPlusFindings(security, warnings, positives) {
 
 function applyHoneypotFindings(check, warnings, positives) {
   if (!check) return { buyTax: "未知", sellTax: "未知", notes: ["Honeypot.is 未返回可用模拟结果。"], highRisk: false };
-  const buyTax = formatPercentValue(check.simulationResult?.buyTax);
-  const sellTax = formatPercentValue(check.simulationResult?.sellTax);
+  const holderAverageTax = directPercentNumber(check.holderAnalysis?.averageTax);
+  const holderHighestTax = directPercentNumber(check.holderAnalysis?.highestTax);
+  const simulationBuyTax = directPercentNumber(check.simulationResult?.buyTax);
+  const simulationSellTax = directPercentNumber(check.simulationResult?.sellTax);
+  const buyTax = formatPercentValue(simulationBuyTax);
+  const strongestSellTax = [simulationSellTax, holderAverageTax, holderHighestTax]
+    .filter((value) => value != null && Number.isFinite(value))
+    .sort((a, b) => b - a)[0];
+  const sellTax = formatPercentValue(strongestSellTax);
   const notes = ["Honeypot.is 已查询。"];
   let highRisk = false;
+
+  const summaryRisk = String(check.summary?.risk || "").toLowerCase();
+  const summaryRiskLevel = Number(check.summary?.riskLevel);
+  if (["honeypot", "very_high", "high"].includes(summaryRisk) || summaryRiskLevel >= 60) {
+    warnings.push(`Honeypot.is 风险等级：${summaryRisk || summaryRiskLevel}。`);
+    highRisk = true;
+  } else if (summaryRisk === "medium" || summaryRiskLevel >= 20) {
+    warnings.push(`Honeypot.is 风险等级：${summaryRisk || summaryRiskLevel}，需要复核。`);
+  }
 
   if (check.honeypotResult?.isHoneypot) {
     warnings.push("Honeypot.is 标记：疑似貔貅。");
     highRisk = true;
   } else if (check.simulationSuccess) {
     positives.push("Honeypot.is 买卖模拟成功。");
+  } else if (check.simulationError) {
+    warnings.push(`Honeypot.is 模拟失败：${check.simulationError}`);
   }
 
-  const sellTaxPercent = taxPercentNumber(check.simulationResult?.sellTax);
-  const buyTaxPercent = taxPercentNumber(check.simulationResult?.buyTax);
+  const flags = [
+    ...(Array.isArray(check.summary?.flags) ? check.summary.flags : []),
+    ...(Array.isArray(check.flags) ? check.flags : [])
+  ];
+  for (const flag of flags.slice(0, 8)) {
+    const label = typeof flag === "string" ? flag : flag.flag || flag.description || "";
+    const severity = String(flag.severity || "").toLowerCase();
+    if (!label) continue;
+    warnings.push(`Honeypot.is 标记：${label}${severity ? `（${severity}）` : ""}`);
+    if (["critical", "high"].includes(severity) || /HONEYPOT|BLOCK|HIGH_TAX|TAX/i.test(label)) highRisk = true;
+  }
+
+  const failedHolders = Number(check.holderAnalysis?.failed || 0);
+  const highTaxWallets = Number(check.holderAnalysis?.highTaxWallets || 0);
+  if (failedHolders > 0) {
+    warnings.push(`Honeypot.is 持有人分析：${failedHolders} 个样本卖出失败。`);
+    highRisk = true;
+  }
+  if (highTaxWallets > 0) {
+    warnings.push(`Honeypot.is 持有人分析：${highTaxWallets} 个钱包卖出税 >= 50%。`);
+    highRisk = true;
+  }
+
+  const sellTaxPercent = strongestSellTax;
+  const buyTaxPercent = simulationBuyTax;
   if (sellTaxPercent != null && sellTaxPercent >= 50) {
     warnings.push(`Honeypot.is 卖税 ${sellTax}，按高风险处理。`);
     highRisk = true;
@@ -1792,6 +1903,12 @@ function applyHoneypotFindings(check, warnings, positives) {
   if (buyTaxPercent != null && buyTaxPercent >= 50) {
     warnings.push(`Honeypot.is 买税 ${buyTax}，按高风险处理。`);
     highRisk = true;
+  }
+  if (check.contractCode?.openSource === false || check.contractCode?.rootOpenSource === false) {
+    warnings.push("Honeypot.is 标记：交易路径或 Token 合约未完全开源，隐藏限制更难识别。");
+  }
+  if (check.contractCode?.isProxy || check.contractCode?.hasProxyCalls) {
+    warnings.push("Honeypot.is 标记：存在 proxy/delegatecall，税率或限制可能动态变化。");
   }
 
   return { buyTax, sellTax, notes, highRisk };
@@ -1859,7 +1976,7 @@ async function analyzeTokenOnly(tokenAddress, options = {}) {
   const requestedSellAmount = String(options.sellAmount || "").trim()
     ? parseDecimalToUnits(options.sellAmount, meta.decimals ?? 18)
     : null;
-  const quoteAmountRaw = requestedSellAmount ?? defaultProbeSellAmount(totalSupply, meta.decimals ?? 18);
+  let quoteAmountRaw = requestedSellAmount ?? defaultProbeSellAmount(totalSupply, meta.decimals ?? 18);
 
   const [goPlusResult, honeypotResult, dexResult] = await Promise.allSettled([
     getGoPlusSecurity(token),
@@ -1876,11 +1993,7 @@ async function analyzeTokenOnly(tokenAddress, options = {}) {
     externalChecks.push(`GoPlus Token Security：已查询${tokenCreator ? `，创建者 ${tokenCreator}` : ""}`);
     highRisk ||= goPlus.highRisk;
     if (goPlus.buyTax !== "未知" || goPlus.sellTax !== "未知") {
-      taxEstimates = {
-        buyTax: goPlus.buyTax === "未知" ? taxEstimates.buyTax : `${goPlus.buyTax}（GoPlus）`,
-        sellTax: goPlus.sellTax === "未知" ? taxEstimates.sellTax : `${goPlus.sellTax}（GoPlus）`,
-        notes: [...taxEstimates.notes, ...goPlus.notes]
-      };
+      taxEstimates = mergeTaxEstimates(taxEstimates, goPlus, "GoPlus");
     }
   } else {
     warnings.push(`GoPlus 查询失败：${goPlusResult.reason?.message || String(goPlusResult.reason)}`);
@@ -1891,11 +2004,7 @@ async function analyzeTokenOnly(tokenAddress, options = {}) {
     externalChecks.push("Honeypot.is：已查询");
     highRisk ||= honeypot.highRisk;
     if (honeypot.buyTax !== "未知" || honeypot.sellTax !== "未知") {
-      taxEstimates = {
-        buyTax: honeypot.buyTax === "未知" ? taxEstimates.buyTax : `${honeypot.buyTax}（Honeypot.is）`,
-        sellTax: honeypot.sellTax === "未知" ? taxEstimates.sellTax : `${honeypot.sellTax}（Honeypot.is）`,
-        notes: [...taxEstimates.notes, ...honeypot.notes]
-      };
+      taxEstimates = mergeTaxEstimates(taxEstimates, honeypot, "Honeypot.is");
     }
   } else {
     externalChecks.push(`Honeypot.is：${honeypotResult.reason?.message || "未找到可模拟池子"}`);
@@ -1910,6 +2019,19 @@ async function analyzeTokenOnly(tokenAddress, options = {}) {
     });
 
     externalChecks.push(`DexScreener：找到 ${pairs.length} 个 Ethereum 池，主池 ${summarizeDexPair(topPair)}`);
+    if (isStrictAddress(topPair.pairAddress)) {
+      try {
+        const pairHoneypot = applyHoneypotFindings(await getHoneypotCheck(token, topPair.pairAddress), warnings, positives);
+        externalChecks.push(`Honeypot.is Pair：已按主池 ${normalizeAddress(topPair.pairAddress)} 复测`);
+        highRisk ||= pairHoneypot.highRisk;
+        if (pairHoneypot.buyTax !== "未知" || pairHoneypot.sellTax !== "未知") {
+          taxEstimates = mergeTaxEstimates(taxEstimates, pairHoneypot, "Honeypot.is 主池");
+        }
+      } catch (err) {
+        externalChecks.push(`Honeypot.is Pair：主池复测失败：${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
     pool = {
       ...pool,
       protocol: v4Pairs.length ? "Uniswap v4 / DexScreener + PoolManager" : `${topPair.dexId || "DEX"} 池`,
@@ -1983,56 +2105,107 @@ async function analyzeTokenOnly(tokenAddress, options = {}) {
             positives.push("v4 PoolKey 未配置 Hook。");
           }
 
-          try {
-            const quote = await quoteV4Sell({
-              poolInit,
-              token,
-              amountRaw: quoteAmountRaw,
-              fromAddress: holder,
-              hookData,
-              blockTag,
-              metaCache
-            });
-            const outText = `${formatUnits(quote.amountOut, quote.tokenOutMeta.decimals, 18)} ${quote.tokenOutMeta.symbol}`;
-            const inText = `${formatUnits(quoteAmountRaw, meta.decimals ?? 18, 8)} ${meta.symbol || "TOKEN"}`;
+          const quoteAmounts = chooseProbeSellAmounts({
+            requestedAmount: requestedSellAmount,
+            fallbackAmount: quoteAmountRaw,
+            totalSupply,
+            decimals: meta.decimals ?? 18,
+            pair: v4Pair
+          });
+          if (quoteAmounts[0]) quoteAmountRaw = quoteAmounts[0];
+
+          const quoteSummaries = [];
+          const quoteFailures = [];
+          const quoteRatios = [];
+          for (const amountRaw of quoteAmounts) {
+            const inText = `${formatUnits(amountRaw, meta.decimals ?? 18, 8)} ${meta.symbol || "TOKEN"}`;
+            try {
+              const quote = await quoteV4Sell({
+                poolInit,
+                token,
+                amountRaw,
+                fromAddress: holder,
+                hookData,
+                blockTag,
+                metaCache
+              });
+              const outText = `${formatUnits(quote.amountOut, quote.tokenOutMeta.decimals, 18)} ${quote.tokenOutMeta.symbol}`;
+              let ratioText = "";
+              const expected = estimateDexExpectedOutput(
+                v4Pair,
+                token,
+                quote.tokenOut,
+                amountRaw,
+                meta.decimals ?? 18,
+                quote.tokenOutMeta.decimals
+              );
+              if (expected) {
+                const actualOut = decimalAmountNumber(quote.amountOut, quote.tokenOutMeta.decimals);
+                const ratio = actualOut / expected.expectedOut;
+                const lossText = quoteLossText(ratio);
+                ratioText = `，约池价 ${(ratio * 100).toFixed(4).replace(/\.?0+$/, "")}%`;
+                quoteRatios.push({ amountRaw, inText, ratio, lossText });
+              }
+              quoteSummaries.push(`${inText} -> ${outText}${ratioText}`);
+              externalChecks.push(`v4 Quoter：卖出 ${inText} -> ${outText}${ratioText}（block ${blockTag}）`);
+            } catch (err) {
+              quoteFailures.push(`${inText}: ${err instanceof Error ? err.message : String(err)}`);
+            }
+          }
+
+          if (quoteSummaries.length) {
             simulations.push({
-              label: "v4 Quoter 卖出报价",
+              label: "v4 Quoter 多档卖出报价",
               ok: true,
-              text: `通过：卖出 ${inText}，Quoter 预计得到 ${outText}，gas ${quote.gasEstimate.toString()}`
+              text: `通过：${quoteSummaries.join("；")}`
             });
             positives.push("Uniswap v4 Quoter 当前能返回卖出报价。");
-            externalChecks.push(`v4 Quoter：卖出 ${inText} -> ${outText}（block ${blockTag}）`);
+            if (quoteFailures.length) externalChecks.push(`v4 Quoter 部分档位失败：${quoteFailures.join("；")}`);
 
-            const expected = estimateDexExpectedOutput(
-              v4Pair,
-              token,
-              quote.tokenOut,
-              quoteAmountRaw,
-              meta.decimals ?? 18,
-              quote.tokenOutMeta.decimals
-            );
-            if (expected) {
-              const actualOut = decimalAmountNumber(quote.amountOut, quote.tokenOutMeta.decimals);
-              const ratio = actualOut / expected.expectedOut;
-              const lossText = quoteLossText(ratio);
-              externalChecks.push(`v4 Quoter / DexScreener 粗略对比：实际约为池价预期的 ${(ratio * 100).toFixed(4).replace(/\.?0+$/, "")}%`);
-              if (ratio < 0.1) {
-                warnings.push(`v4 Quoter 卖出报价明显偏低，疑似卖出损耗/税约 ${lossText}。`);
+            const smallestRatioEvidence = quoteRatios.find((item) => Number.isFinite(item.ratio));
+            const worstRatioEvidence = quoteRatios
+              .filter((item) => Number.isFinite(item.ratio))
+              .sort((a, b) => a.ratio - b.ratio)[0];
+            if (smallestRatioEvidence) {
+              externalChecks.push(
+                `v4 Quoter / DexScreener 小额对比：${smallestRatioEvidence.inText} 实际约为池价预期的 ${(smallestRatioEvidence.ratio * 100)
+                  .toFixed(4)
+                  .replace(/\.?0+$/, "")}%`
+              );
+              if (smallestRatioEvidence.ratio < 0.1) {
+                warnings.push(`v4 Quoter 小额卖出报价明显偏低，疑似卖出损耗/税约 ${smallestRatioEvidence.lossText}。`);
                 highRisk = true;
-                taxEstimates = {
-                  ...taxEstimates,
-                  sellTax: `约 ${lossText}（v4 Quoter 对比池价）`,
-                  notes: [...taxEstimates.notes, "卖税/损耗按 v4 Quoter 输出和 DexScreener 池价粗略对比，可能混入价格冲击。"]
-                };
-              } else if (ratio < 0.5) {
-                warnings.push(`v4 Quoter 卖出报价低于池价预期，可能有卖税、Hook 扣减或大额价格冲击，损耗约 ${lossText}。`);
+                taxEstimates = mergeTaxEstimates(
+                  taxEstimates,
+                  {
+                    buyTax: "未知",
+                    sellTax: `约 ${smallestRatioEvidence.lossText}`,
+                    notes: ["卖税/损耗按 v4 Quoter 小额输出和 DexScreener 池价粗略对比，仍可能混入接口价格延迟。"]
+                  },
+                  "v4 Quoter 对比池价"
+                );
+              } else if (smallestRatioEvidence.ratio < 0.5) {
+                warnings.push(`v4 Quoter 小额卖出报价低于池价预期，可能有卖税、Hook 扣减或价格源偏差，损耗约 ${smallestRatioEvidence.lossText}。`);
               }
             }
-          } catch (err) {
+            if (worstRatioEvidence && smallestRatioEvidence && worstRatioEvidence !== smallestRatioEvidence && worstRatioEvidence.ratio < 0.1) {
+              warnings.push(`v4 Quoter 大额档位报价明显偏低，可能是高税、限卖或价格冲击：${worstRatioEvidence.inText} 损耗约 ${worstRatioEvidence.lossText}。`);
+              highRisk = true;
+              taxEstimates = mergeTaxEstimates(
+                taxEstimates,
+                {
+                  buyTax: "未知",
+                  sellTax: `约 ${worstRatioEvidence.lossText}`,
+                  notes: ["多档 v4 Quoter 中较大卖出档位出现严重损耗；可能是分段税、限卖或价格冲击，需要用真实小额交易复核。"]
+                },
+                "v4 Quoter 大额档位"
+              );
+            }
+          } else {
             simulations.push({
-              label: "v4 Quoter 卖出报价",
+              label: "v4 Quoter 多档卖出报价",
               ok: false,
-              text: `失败：v4 Quoter 卖出报价 revert / 失败：${err instanceof Error ? err.message : String(err)}`
+              text: `失败：${quoteFailures.join("；") || "v4 Quoter 卖出报价 revert"}`
             });
             warnings.push("v4 Quoter 卖出报价失败，当前参数下可能无法卖出；如 Hook 依赖 hookData/from，请填入持币地址和 Hook Data 再测。");
             highRisk = true;
@@ -2067,6 +2240,12 @@ async function analyzeTokenOnly(tokenAddress, options = {}) {
     warnings.push("DexScreener 没有找到该代币的 Ethereum 池子。");
   } else {
     warnings.push(`DexScreener 查询失败：${dexResult.reason?.message || String(dexResult.reason)}`);
+  }
+
+  const finalSellTaxRisk = taxRiskLevel(taxEstimates.sellTax);
+  if (finalSellTaxRisk === "high") highRisk = true;
+  if (!highRisk && finalSellTaxRisk === "medium") {
+    warnings.push(`卖税估算 ${taxEstimates.sellTax}，属于偏高税率，需要人工复核。`);
   }
 
   if (!highRisk) {
