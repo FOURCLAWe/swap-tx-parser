@@ -4,14 +4,14 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Swap Tx Parser</title>
-    <link rel="stylesheet" href="./styles.css?v=13" />
+    <link rel="stylesheet" href="./styles.css?v=14" />
   </head>
   <body>
     <main class="shell">
       <header class="topbar">
         <div>
           <p class="eyebrow">Ethereum mainnet</p>
-          <h1>交易解析器</h1>
+          <h1>链上交易工具</h1>
         </div>
         <div class="top-actions">
           <button class="ghost-btn" id="connect-wallet" type="button">连接 OKX</button>
@@ -21,7 +21,50 @@
 
       <section class="workspace">
         <aside class="left-stack">
+          <form class="panel probe-panel" id="probe-form">
+            <div class="sender-head">
+              <div>
+                <p class="eyebrow">Risk monitor</p>
+                <h2>买卖风险监测</h2>
+              </div>
+            </div>
+
+            <label class="field">
+              <span>最早买入 tx / 代币合约</span>
+              <input
+                id="probe-subject"
+                name="probeSubject"
+                autocomplete="off"
+                spellcheck="false"
+                placeholder="0x... tx 或 0x... token"
+                required
+              />
+            </label>
+
+            <label class="field">
+              <span>持币地址（可选）</span>
+              <input
+                id="probe-holder-address"
+                name="probeHolderAddress"
+                autocomplete="off"
+                spellcheck="false"
+                placeholder="默认用该 tx 里的收币地址"
+              />
+            </label>
+
+            <button class="primary-btn" type="submit">检测风险</button>
+            <p class="form-status" id="probe-status">输入最早买入 tx 可估买税并识别池子；只输入合约会做基础风险扫描。</p>
+            <p class="mini-note">卖税需要卖出日志或 fork 才能精确估算；这里会标注日志估算和当前预检结果。</p>
+          </form>
+
           <form class="panel form-panel" id="analyze-form">
+            <div class="sender-head">
+              <div>
+                <p class="eyebrow">Transaction parser</p>
+                <h2>交易解析器</h2>
+              </div>
+            </div>
+
             <div class="segmented" role="radiogroup" aria-label="交易类型">
               <label>
                 <input type="radio" name="tradeType" value="buy" checked />
@@ -76,47 +119,11 @@
             <p class="mini-note" id="mode-note">只生成参数，不发送交易。未知路由先小额试单。</p>
           </form>
 
-          <form class="panel probe-panel" id="probe-form">
-            <div class="sender-head">
-              <div>
-                <p class="eyebrow">Hook check</p>
-                <h2>卖出风险检测</h2>
-              </div>
-            </div>
-
-            <label class="field">
-              <span>最早 buy / mint tx</span>
-              <input
-                id="probe-tx-hash"
-                name="probeTxHash"
-                autocomplete="off"
-                spellcheck="false"
-                placeholder="0x..."
-                required
-              />
-            </label>
-
-            <label class="field">
-              <span>持币地址（可选）</span>
-              <input
-                id="probe-holder-address"
-                name="probeHolderAddress"
-                autocomplete="off"
-                spellcheck="false"
-                placeholder="默认用该 tx 里的收币地址"
-              />
-            </label>
-
-            <button class="primary-btn" type="submit">解析池子并预检</button>
-            <p class="form-status" id="probe-status">用最早买入或 mint 交易识别 Pool/Hook，并做卖出预检。</p>
-            <p class="mini-note">普通 RPC 不能串行模拟“先买再卖”，这里重点检查当前买入是否 revert、授权/转入池子是否异常。</p>
-          </form>
-
           <section class="panel approval-panel" id="approval-builder">
             <div class="sender-head">
               <div>
                 <p class="eyebrow">ERC20 approve</p>
-                <h2>授权生成器</h2>
+                <h2>授权工具</h2>
               </div>
               <button class="load-btn" id="build-approval" type="button">生成授权</button>
             </div>
@@ -212,6 +219,6 @@
       </div>
     </template>
 
-    <script src="./app.js?v=13" type="module"></script>
+    <script src="./app.js?v=14" type="module"></script>
   </body>
 </html>

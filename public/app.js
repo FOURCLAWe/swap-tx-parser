@@ -678,8 +678,17 @@ function encodeTransfer(to, amount) {
   return encodeAddressUint("0xa9059cbb", to, amount);
 }
 
+function encodeTotalSupply() {
+  return "0x18160ddd";
+}
+
 async function getTokenBalance(token, owner) {
   const result = await ethCall(token, encodeBalanceOf(owner));
+  return hexToBigInt(result || "0x0");
+}
+
+async function getTotalSupply(token) {
+  const result = await ethCall(token, encodeTotalSupply());
   return hexToBigInt(result || "0x0");
 }
 
@@ -1029,6 +1038,72 @@ function summarizeTransfers(transfers, metaCache) {
   });
 }
 
+function sumAmounts(transfers) {
+  return transfers.reduce((total, transfer) => total + BigInt(transfer.amount || 0), 0n);
+}
+
+function formatTaxRatio(taxAmount, basisAmount) {
+  const basis = BigInt(basisAmount || 0);
+  if (basis <= 0n) return "无法估算";
+  const tax = BigInt(taxAmount || 0);
+  const bps = (tax * 10000n) / basis;
+  const whole = bps / 100n;
+  const fraction = (bps % 100n).toString().padStart(2, "0").replace(/0+$/, "");
+  return `${fraction ? `${whole}.${fraction}` : whole.toString()}%`;
+}
+
+function estimateTransferTaxes(transfers, primaryToken, traderAddress, pool) {
+  if (!primaryToken) {
+    return {
+      buyTax: "未识别代币",
+      sellTax: "未识别代币",
+      notes: ["无法识别主代币，不能估算买卖税。"]
+    };
+  }
+
+  const tokenTransfers = transfers.filter((transfer) => transfer.token === primaryToken.token && transfer.amount > 0n);
+  const notes = [];
+  let buyTax = "需要最早买入 tx 日志";
+  let sellTax = "需要成功卖出 tx 日志";
+
+  const buyReceipts = tokenTransfers.filter((transfer) => transfer.to === traderAddress && transfer.from !== zeroAddress);
+  const buySources = new Set(buyReceipts.map((transfer) => transfer.from));
+  const buyReceived = sumAmounts(buyReceipts);
+  const buyDistributed = sumAmounts(tokenTransfers.filter((transfer) => buySources.has(transfer.from)));
+  if (buyReceived > 0n && buyDistributed >= buyReceived) {
+    buyTax = `${formatTaxRatio(buyDistributed - buyReceived, buyDistributed)}（日志估算）`;
+    notes.push(
+      buyDistributed === buyReceived
+        ? "买入日志没有看到额外扣税转账。"
+        : "买税按同一出币地址分发总量与买家实际收到量估算。"
+    );
+  }
+
+  const sellTransfers = tokenTransfers.filter((transfer) => transfer.from === traderAddress && transfer.to !== zeroAddress);
+  const sellSent = sumAmounts(sellTransfers);
+  if (sellSent > 0n) {
+    const poolTargets = new Set([
+      pool?.poolTarget,
+      pool?.router,
+      ...(pool?.endpointCandidates || []).map((item) => item.address)
+    ].filter(Boolean));
+    const sellToPool = sumAmounts(sellTransfers.filter((transfer) => poolTargets.has(transfer.to)));
+    if (sellToPool > 0n && sellSent >= sellToPool) {
+      sellTax = `${formatTaxRatio(sellSent - sellToPool, sellSent)}（日志估算）`;
+      notes.push(
+        sellSent === sellToPool
+          ? "卖出日志没有看到额外扣税转账。"
+          : "卖税按卖家转出总量与进入池子/路由量估算。"
+      );
+    } else {
+      sellTax = "卖出方向日志不足";
+    }
+  }
+
+  if (!notes.length) notes.push("税率只能根据交易日志估算；仅凭合约地址无法精确计算买卖税。");
+  return { buyTax, sellTax, notes };
+}
+
 function findPoolSignals(tx, receipt, transfers, tokenAddress) {
   const logs = receipt?.logs || [];
   const tokenSet = new Set([tokenAddress, wethAddress].filter(Boolean).map(normalizeAddress));
@@ -1129,7 +1204,94 @@ function makeCallSummary(result, okText, failText) {
   return `${failText}：${result.error}`;
 }
 
+async function analyzeTokenOnly(tokenAddress, holderAddress = "") {
+  const token = normalizeAddress(tokenAddress);
+  const metaCache = new Map();
+  const meta = await getTokenMeta(token, metaCache);
+  const [code, totalSupplyResult] = await Promise.allSettled([
+    ethRpc("eth_getCode", [token, "latest"]),
+    getTotalSupply(token)
+  ]);
+  const warnings = [];
+  const positives = [];
+  const simulations = [];
+
+  if (code.status !== "fulfilled" || !code.value || code.value === "0x") {
+    warnings.push("这个地址当前没有合约代码，可能不是 ERC20 合约。");
+  } else {
+    positives.push("代币合约代码存在。");
+  }
+
+  const totalSupply = totalSupplyResult.status === "fulfilled" ? totalSupplyResult.value : 0n;
+  if (totalSupply > 0n) positives.push("totalSupply 可读取。");
+  else warnings.push("totalSupply 读取失败或为 0，代币可能不是标准 ERC20。");
+
+  let holder = holderAddress ? normalizeAddress(holderAddress) : "";
+  let holderBalance = 0n;
+  if (holder) {
+    try {
+      holderBalance = await getTokenBalance(token, holder);
+      simulations.push({
+        label: "余额读取",
+        ok: true,
+        text: `通过：持币地址余额 ${formatUnits(holderBalance, meta.decimals ?? 18, 8)} ${meta.symbol || "TOKEN"}`
+      });
+    } catch (err) {
+      warnings.push(`持币地址余额读取失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  warnings.push("仅输入代币合约不能知道具体池子/Hook，也不能精确估算买卖税；建议输入最早买入 tx。");
+  const taxEstimates = {
+    buyTax: "需要最早买入 tx 日志",
+    sellTax: "需要成功卖出 tx 或 fork 模拟",
+    notes: ["仅凭合约地址无法精确计算买卖税。"]
+  };
+
+  return {
+    tx: {
+      hash: "仅合约检测",
+      from: "",
+      to: token,
+      valueEth: "0",
+      selector: "contract",
+      blockNumber: null
+    },
+    primaryToken: {
+      token,
+      symbol: meta.symbol || "TOKEN",
+      name: meta.name || "",
+      decimals: meta.decimals ?? 18,
+      sampleHolder: holder,
+      source: "合约输入"
+    },
+    holder,
+    holderBalance: formatUnits(holderBalance, meta.decimals ?? 18, 8),
+    probeAmount: "0",
+    pool: {
+      protocol: "仅合约检测",
+      poolManager: "",
+      poolIdCandidates: [],
+      hookCandidates: [],
+      logAddressCandidates: [],
+      endpointCandidates: [],
+      poolTarget: "",
+      router: ""
+    },
+    transfers: [],
+    simulations,
+    positives,
+    warnings,
+    taxEstimates,
+    risk: warnings.length ? "medium" : "low"
+  };
+}
+
 async function analyzeProbe(payload) {
+  if (payload.tokenAddress && !payload.txHash) {
+    return analyzeTokenOnly(payload.tokenAddress, payload.holderAddress);
+  }
+
   const [tx, receipt] = await Promise.all([
     ethRpc("eth_getTransactionByHash", [payload.txHash]),
     ethRpc("eth_getTransactionReceipt", [payload.txHash])
@@ -1143,6 +1305,7 @@ async function analyzeProbe(payload) {
   const fromAddress = normalizeAddress(tx.from);
   const primaryToken = choosePrimaryToken(transfers, fromAddress, metaCache);
   const pool = findPoolSignals(tx, receipt, transfers, primaryToken?.token || "");
+  const taxEstimates = estimateTransferTaxes(transfers, primaryToken, fromAddress, pool);
   const simulations = [];
   const warnings = [];
   const positives = [];
@@ -1263,6 +1426,7 @@ async function analyzeProbe(payload) {
     simulations,
     positives,
     warnings,
+    taxEstimates,
     risk
   };
 }
@@ -1624,6 +1788,17 @@ function renderProbeResult(data) {
   );
   resultEl.append(createSection("代币 / 持币", tokenSummary));
 
+  const taxSummary = document.createElement("div");
+  taxSummary.className = "summary-grid";
+  taxSummary.append(
+    createMetric("买税估算", data.taxEstimates?.buyTax || "无法估算"),
+    createMetric("卖税估算", data.taxEstimates?.sellTax || "无法估算")
+  );
+  resultEl.append(createSection("买卖税", taxSummary));
+  if (data.taxEstimates?.notes?.length) {
+    resultEl.append(createSection("税率说明", createList(data.taxEstimates.notes, "warning-list")));
+  }
+
   const poolSummary = document.createElement("div");
   poolSummary.className = "summary-grid";
   poolSummary.append(
@@ -1740,12 +1915,14 @@ form.addEventListener("submit", async (event) => {
 probeForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const formData = new FormData(probeForm);
-  const txHash = extractTxHash(formData.get("probeTxHash"));
+  const subject = String(formData.get("probeSubject") || "").trim();
+  const txHash = extractTxHash(subject);
+  const tokenAddress = txHash ? "" : extractAddress(subject);
   const holderAddress = extractAddress(formData.get("probeHolderAddress"));
   const rawHolder = String(formData.get("probeHolderAddress") || "").trim();
 
-  if (!txHash) {
-    renderProbeError("交易哈希不完整", "请粘贴完整 buy/mint tx，或直接粘 Etherscan 交易链接。");
+  if (!txHash && !tokenAddress) {
+    renderProbeError("输入不完整", "请粘贴完整 buy/mint tx、Etherscan 交易链接，或代币合约地址。");
     return;
   }
   if (rawHolder && !holderAddress) {
@@ -1755,11 +1932,11 @@ probeForm.addEventListener("submit", async (event) => {
 
   probeSubmitButton.disabled = true;
   probeSubmitButton.textContent = "检测中...";
-  setProbeStatus("正在读取交易日志、识别池子，并用 eth_call 做预检。");
+  setProbeStatus(txHash ? "正在读取交易日志、识别池子，并用 eth_call 做预检。" : "正在读取代币合约信息。");
   setView("loading");
 
   try {
-    const data = await analyzeProbe({ txHash, holderAddress });
+    const data = await analyzeProbe({ txHash, tokenAddress, holderAddress });
     renderProbeResult(data);
   } catch (err) {
     renderProbeError("检测失败", err instanceof Error ? err.message : String(err));
