@@ -19,6 +19,12 @@ const sendTransactionButton = document.querySelector("#send-transaction");
 const senderStatus = document.querySelector("#sender-status");
 const senderQueueEl = document.querySelector("#sender-queue");
 const senderStepsEl = document.querySelector("#sender-steps");
+const approveTokenInput = document.querySelector("#approve-token");
+const approveSpenderInput = document.querySelector("#approve-spender");
+const approveAmountInput = document.querySelector("#approve-amount");
+const approveDecimalsInput = document.querySelector("#approve-decimals");
+const approveMaxInput = document.querySelector("#approve-max");
+const buildApprovalButton = document.querySelector("#build-approval");
 
 const txRegex = /0x[a-fA-F0-9]{64}/;
 const addressRegex = /0x[a-fA-F0-9]{40}/;
@@ -26,6 +32,7 @@ const defaultEthRpcUrl = "https://ethereum-rpc.publicnode.com";
 const transferTopic = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 const wethAddress = "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2";
 const slippageDenominator = 10000n;
+const maxUint256 = 2n ** 256n - 1n;
 const knownMethods = {
   "0x077587dd": "V4 hook/router custom ETH buy",
   "0x286d4c33": "V4 hook/router custom token sell",
@@ -283,6 +290,30 @@ function fillSender(txPayload, label = "交易", options = {}) {
   }
 }
 
+function buildManualApproval() {
+  try {
+    const token = extractAddress(approveTokenInput.value);
+    const spender = extractAddress(approveSpenderInput.value);
+    if (!token) throw new Error("Token 合约地址不完整");
+    if (!spender) throw new Error("Spender / 路由地址不完整");
+
+    const decimals = parseDecimals(approveDecimalsInput.value);
+    const amountRaw = approveMaxInput.checked
+      ? maxUint256
+      : parseDecimalToUnits(approveAmountInput.value, decimals);
+    if (amountRaw == null) throw new Error("请填写授权数量，或者勾选最大授权");
+
+    const approveTx = buildApproveTransaction(token, spender, amountRaw, {
+      decimals,
+      symbol: approveMaxInput.checked ? "MAX" : "TOKEN"
+    });
+    clearSenderQueue();
+    fillSender(approveTx, "授权 approve");
+  } catch (err) {
+    setSenderStatus(err instanceof Error ? err.message : String(err), "error");
+  }
+}
+
 function showLoading(isLoading) {
   submitButton.disabled = isLoading;
   submitButton.textContent = isLoading ? "解析中..." : "解析并生成";
@@ -340,6 +371,16 @@ function parseSlippageBps(value) {
   const bps = BigInt(whole || "0") * 100n + BigInt(fraction.padEnd(2, "0").slice(0, 2) || "0");
   if (bps < 0n || bps > slippageDenominator) throw new Error("Slippage must be between 0 and 100");
   return bps;
+}
+
+function parseDecimals(value) {
+  const trimmed = String(value || "").trim() || "18";
+  if (!/^\d+$/.test(trimmed)) throw new Error("Decimals 必须是整数");
+  const decimals = Number(trimmed);
+  if (!Number.isSafeInteger(decimals) || decimals < 0 || decimals > 255) {
+    throw new Error("Decimals 范围必须是 0 到 255");
+  }
+  return decimals;
 }
 
 function formatSlippageBps(bps) {
@@ -1234,6 +1275,8 @@ form.addEventListener("submit", async (event) => {
 connectWalletButton.addEventListener("click", () => {
   connectWallet();
 });
+
+buildApprovalButton.addEventListener("click", buildManualApproval);
 
 sendTransactionButton.addEventListener("click", async () => {
   const provider = getProvider();

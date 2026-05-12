@@ -135,6 +135,22 @@ h3 {
   padding: 18px;
 }
 
+.approval-builder {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(10, 13, 17, 0.34);
+}
+
+.inline-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 92px;
+  gap: 10px;
+  align-items: end;
+}
+
 .sender-head {
   display: flex;
   align-items: flex-start;
