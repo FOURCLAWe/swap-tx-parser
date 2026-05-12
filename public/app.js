@@ -1084,6 +1084,23 @@ function createCopyGroup(title, rows, txPayload = null) {
   return group;
 }
 
+function createFillActions(actions) {
+  const usableActions = actions.filter((action) => action?.tx);
+  const bar = document.createElement("div");
+  bar.className = `tx-action-bar ${usableActions.length === 1 ? "single" : ""}`.trim();
+
+  for (const action of usableActions) {
+    const button = document.createElement("button");
+    button.className = "tx-fill-btn";
+    button.type = "button";
+    button.textContent = action.label;
+    button.addEventListener("click", () => fillSender(action.tx, action.senderLabel || action.label));
+    bar.append(button);
+  }
+
+  return bar;
+}
+
 function createList(items, className) {
   const list = document.createElement("ul");
   list.className = className;
@@ -1169,6 +1186,23 @@ function renderResult(data) {
     confidence.className = `confidence ${data.generated.confidence}`.trim();
     confidence.textContent = `confidence: ${data.generated.confidence}`;
     generatedWrap.append(confidence);
+
+    generatedWrap.append(
+      createFillActions(
+        data.generated.approve
+          ? [
+              { label: "填入授权", senderLabel: "1. 授权 approve", tx: data.generated.approve },
+              { label: "填入卖出", senderLabel: "2. 卖出 swap", tx: data.generated }
+            ]
+          : [
+              {
+                label: isSell ? "填入卖出" : "填入买入",
+                senderLabel: isSell ? "卖出 swap" : "买入 swap",
+                tx: data.generated
+              }
+            ]
+      )
+    );
 
     if (data.generated.approve) {
       generatedWrap.append(
