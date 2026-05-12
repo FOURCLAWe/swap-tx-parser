@@ -16,3 +16,4 @@ the transaction in your wallet. In sell mode, generated approval and swap
 transactions are shown as sender steps, and the approval is filled first.
 There is also a manual approval builder for generating an ERC20 `approve`
 transaction from a token address, spender/router address, amount, and decimals.
+The left rail is ordered as parser, approval builder, then sender.

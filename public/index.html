@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Swap Tx Parser</title>
-    <link rel="stylesheet" href="./styles.css?v=8" />
+    <link rel="stylesheet" href="./styles.css?v=9" />
   </head>
   <body>
     <main class="shell">
@@ -73,6 +73,45 @@
             <p class="mini-note" id="mode-note">只生成参数，不发送交易。未知路由先小额试单。</p>
           </form>
 
+          <section class="panel approval-panel" id="approval-builder">
+            <div class="sender-head">
+              <div>
+                <p class="eyebrow">ERC20 approve</p>
+                <h2>授权生成器</h2>
+              </div>
+              <button class="load-btn" id="build-approval" type="button">生成授权</button>
+            </div>
+
+            <label class="field">
+              <span>Token 合约</span>
+              <input id="approve-token" autocomplete="off" spellcheck="false" placeholder="0x..." />
+            </label>
+
+            <label class="field">
+              <span>Spender / 路由</span>
+              <input id="approve-spender" autocomplete="off" spellcheck="false" placeholder="0x..." />
+            </label>
+
+            <div class="inline-fields">
+              <label class="field">
+                <span>授权数量</span>
+                <input id="approve-amount" inputmode="decimal" placeholder="10" />
+              </label>
+
+              <label class="field">
+                <span>Decimals</span>
+                <input id="approve-decimals" inputmode="numeric" value="18" />
+              </label>
+            </div>
+
+            <label class="switch-row">
+              <input id="approve-max" type="checkbox" />
+              <span>最大授权</span>
+            </label>
+
+            <p class="mini-note">不知道 Spender 时，先用一笔成功卖出 tx 解析，工具会自动带出授权。</p>
+          </section>
+
           <section class="panel sender-panel" id="hex-sender">
             <div class="sender-head">
               <div>
@@ -87,42 +126,6 @@
             <div class="sender-queue" id="sender-queue" hidden>
               <p class="copy-group-title">待发送步骤</p>
               <div class="sender-steps" id="sender-steps"></div>
-            </div>
-
-            <div class="approval-builder">
-              <div class="copy-heading">
-                <p class="copy-group-title">授权生成器</p>
-                <button class="load-btn" id="build-approval" type="button">生成授权</button>
-              </div>
-
-              <label class="field">
-                <span>Token 合约</span>
-                <input id="approve-token" autocomplete="off" spellcheck="false" placeholder="0x..." />
-              </label>
-
-              <label class="field">
-                <span>Spender / 路由</span>
-                <input id="approve-spender" autocomplete="off" spellcheck="false" placeholder="0x..." />
-              </label>
-
-              <div class="inline-fields">
-                <label class="field">
-                  <span>授权数量</span>
-                  <input id="approve-amount" inputmode="decimal" placeholder="10" />
-                </label>
-
-                <label class="field">
-                  <span>Decimals</span>
-                  <input id="approve-decimals" inputmode="numeric" value="18" />
-                </label>
-              </div>
-
-              <label class="switch-row">
-                <input id="approve-max" type="checkbox" />
-                <span>最大授权</span>
-              </label>
-
-              <p class="mini-note">不知道 Spender 时，先用一笔成功卖出 tx 解析，工具会自动带出授权。</p>
             </div>
 
             <label class="field">
@@ -171,6 +174,6 @@
       </div>
     </template>
 
-    <script src="./app.js?v=8" type="module"></script>
+    <script src="./app.js?v=9" type="module"></script>
   </body>
 </html>
