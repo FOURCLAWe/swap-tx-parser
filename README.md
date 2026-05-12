@@ -21,3 +21,8 @@ The left rail is ordered as parser, approval builder, then sender.
 Parsed results include fill buttons that write the generated transaction into
 the hex sender fields.
 The wallet connect button lives in the top-right header.
+
+The Hook check panel accepts an early buy or mint transaction, identifies the
+token, v4 PoolManager/PoolId candidates, possible Hook/router addresses, and
+uses `eth_call` to preflight current buy, approve, and token transfer-to-pool
+behavior. It is a risk screen, not a full forked buy-then-sell guarantee.

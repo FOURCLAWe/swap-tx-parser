@@ -5,6 +5,9 @@ const resultEl = document.querySelector("#result");
 const copyRowTemplate = document.querySelector("#copy-row-template");
 const submitButton = form.querySelector("button[type='submit']");
 const formStatus = document.querySelector("#form-status");
+const probeForm = document.querySelector("#probe-form");
+const probeSubmitButton = probeForm.querySelector("button[type='submit']");
+const probeStatus = document.querySelector("#probe-status");
 const txLabel = document.querySelector("#tx-label");
 const amountLabel = document.querySelector("#amount-label");
 const tradeAmountInput = document.querySelector("#trade-amount");
@@ -30,7 +33,12 @@ const txRegex = /0x[a-fA-F0-9]{64}/;
 const addressRegex = /0x[a-fA-F0-9]{40}/;
 const defaultEthRpcUrl = "https://ethereum-rpc.publicnode.com";
 const transferTopic = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
+const zeroAddress = "0x0000000000000000000000000000000000000000";
 const wethAddress = "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2";
+const v4PoolManagerAddress = "0x000000000004444c5dc75cb358380d2e3de08a90";
+const permit2Address = "0x000000000022d473030f116ddee9f6b43ac78ba3";
+const universalRouterAddress = "0x66a9893cc07d91d95644aedd05d03f95e1dba8af";
+const universalRouter211Address = "0x4c82d1fbfe28c977cbb58d8c7ff8fcf9f70a2cca";
 const slippageDenominator = 10000n;
 const maxUint256 = 2n ** 256n - 1n;
 const knownMethods = {
@@ -85,6 +93,11 @@ function extractAddress(value) {
 function setFormStatus(message, state = "") {
   formStatus.textContent = message;
   formStatus.className = `form-status ${state}`.trim();
+}
+
+function setProbeStatus(message, state = "") {
+  probeStatus.textContent = message;
+  probeStatus.className = `form-status ${state}`.trim();
 }
 
 function setSenderStatus(message, state = "") {
@@ -353,6 +366,10 @@ function addressToWord(address) {
   return strip0x(address).toLowerCase().padStart(64, "0");
 }
 
+function encodeAddressUint(selector, address, amount) {
+  return encodeStaticWords(selector, [addressToWord(address), bigIntToWord(amount)]);
+}
+
 function parseDecimalToUnits(value, decimals = 18) {
   const trimmed = String(value || "").trim();
   if (!trimmed) return null;
@@ -510,8 +527,20 @@ async function ethRpc(method, params = []) {
   }
 }
 
-async function ethCall(to, data) {
-  return ethRpc("eth_call", [{ to, data }, "latest"]);
+async function ethCall(to, data, options = {}) {
+  const tx = { to, data };
+  if (options.from) tx.from = options.from;
+  if (options.value) tx.value = options.value;
+  return ethRpc("eth_call", [tx, options.blockTag || "latest"]);
+}
+
+async function tryEthCall(tx, blockTag = "latest") {
+  try {
+    const result = await ethRpc("eth_call", [tx, blockTag]);
+    return { ok: true, result };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
 }
 
 function hexToUtf8(hexValue) {
@@ -639,6 +668,25 @@ function buildApproveTransaction(token, spender, amountRaw, tokenMeta = {}) {
     amount: formatUnits(amount, tokenMeta.decimals ?? 18, 8),
     symbol: tokenMeta.symbol || "TOKEN"
   };
+}
+
+function encodeBalanceOf(owner) {
+  return encodeStaticWords("0x70a08231", [addressToWord(owner)]);
+}
+
+function encodeTransfer(to, amount) {
+  return encodeAddressUint("0xa9059cbb", to, amount);
+}
+
+async function getTokenBalance(token, owner) {
+  const result = await ethCall(token, encodeBalanceOf(owner));
+  return hexToBigInt(result || "0x0");
+}
+
+function isSuccessfulBoolReturn(result) {
+  const clean = strip0x(result || "");
+  if (!clean) return true;
+  return hexToBigInt(clean.slice(-64) || "0") !== 0n;
 }
 
 function buildGeneratedBuyTransaction(tx, options) {
@@ -921,6 +969,301 @@ function buildGeneratedSellTransaction(tx, options, context = {}) {
     approve,
     slippagePercent: formatSlippageBps(slippageBps),
     forceMinOutZero
+  };
+}
+
+function collectAddressWords(input) {
+  const clean = strip0x(input || "");
+  const addresses = [];
+  const seen = new Set();
+  for (let i = 8; i + 64 <= clean.length; i += 64) {
+    const word = clean.slice(i, i + 64);
+    let value = 0n;
+    try {
+      value = hexToBigInt(word);
+    } catch {
+      value = 0n;
+    }
+    if (value === 0n || value > (1n << 160n) - 1n) continue;
+    const address = wordToAddress(word);
+    if (address === zeroAddress || seen.has(address)) continue;
+    seen.add(address);
+    addresses.push(address);
+  }
+  return addresses;
+}
+
+function uniq(values) {
+  return [...new Set(values.filter(Boolean))];
+}
+
+function choosePrimaryToken(transfers, fromAddress, metaCache) {
+  const nonWeth = transfers.filter((transfer) => transfer.token !== wethAddress);
+  const directBuy = nonWeth.find((transfer) => transfer.to === fromAddress && transfer.amount > 0n);
+  const mint = nonWeth.find((transfer) => transfer.from === zeroAddress && transfer.amount > 0n);
+  const fallback = nonWeth.find((transfer) => transfer.amount > 0n);
+  const selected = directBuy || mint || fallback || null;
+  if (!selected) return null;
+  const meta = metaCache.get(selected.token) || { symbol: "TOKEN", name: "", decimals: 18 };
+  return {
+    token: selected.token,
+    symbol: meta.symbol || "TOKEN",
+    name: meta.name || "",
+    decimals: meta.decimals ?? 18,
+    sampleHolder: selected.to,
+    source: directBuy ? "buy 接收" : mint ? "mint 接收" : "日志推断"
+  };
+}
+
+function summarizeTransfers(transfers, metaCache) {
+  return transfers.slice(0, 20).map((transfer) => {
+    const meta = metaCache.get(transfer.token) || { symbol: "TOKEN", decimals: 18 };
+    return {
+      token: transfer.token,
+      symbol: meta.symbol || "TOKEN",
+      from: transfer.from,
+      to: transfer.to,
+      amount: formatUnits(transfer.amount, meta.decimals ?? 18, 8),
+      amountRaw: transfer.amount.toString()
+    };
+  });
+}
+
+function findPoolSignals(tx, receipt, transfers, tokenAddress) {
+  const logs = receipt?.logs || [];
+  const tokenSet = new Set([tokenAddress, wethAddress].filter(Boolean).map(normalizeAddress));
+  const logAddresses = uniq(logs.map((log) => normalizeAddress(log.address || zeroAddress)));
+  const nonTokenLogAddresses = logAddresses.filter((address) => !tokenSet.has(address));
+  const hasV4PoolManager = logAddresses.includes(v4PoolManagerAddress);
+
+  const endpointStats = new Map();
+  for (const transfer of transfers) {
+    for (const [side, address] of [["from", transfer.from], ["to", transfer.to]]) {
+      if (!address || address === zeroAddress) continue;
+      if (!endpointStats.has(address)) {
+        endpointStats.set(address, { address, in: 0, out: 0, tokens: new Set(), directions: new Set() });
+      }
+      const stat = endpointStats.get(address);
+      stat.tokens.add(transfer.token);
+      stat.directions.add(side);
+      if (side === "to") stat.in += 1;
+      else stat.out += 1;
+    }
+  }
+
+  const endpointCandidates = [...endpointStats.values()]
+    .filter((stat) => {
+      if (stat.address === zeroAddress || stat.address === normalizeAddress(tx.from || zeroAddress)) return false;
+      if (tokenSet.has(stat.address)) return false;
+      return stat.tokens.size >= 2 || stat.address === v4PoolManagerAddress;
+    })
+    .sort((a, b) => b.tokens.size - a.tokens.size || b.in + b.out - (a.in + a.out))
+    .slice(0, 8)
+    .map((stat) => ({
+      address: stat.address,
+      tokens: [...stat.tokens],
+      text: `${stat.address} / tokens:${stat.tokens.size} in:${stat.in} out:${stat.out}`
+    }));
+
+  const poolIdCandidates = uniq(
+    logs
+      .filter((log) => normalizeAddress(log.address || zeroAddress) === v4PoolManagerAddress)
+      .flatMap((log) => (log.topics || []).slice(1))
+      .filter((topic) => /^0x[a-fA-F0-9]{64}$/.test(String(topic || "")))
+      .map((topic) => normalizeHex(topic))
+  ).slice(0, 8);
+
+  const addressWords = collectAddressWords(tx.input || "0x");
+  const knownAddresses = new Set([
+    normalizeAddress(tx.from || zeroAddress),
+    tx.to ? normalizeAddress(tx.to) : "",
+    tokenAddress,
+    wethAddress,
+    v4PoolManagerAddress,
+    permit2Address,
+    universalRouterAddress,
+    universalRouter211Address
+  ].filter(Boolean));
+  const hookCandidates = addressWords.filter((address) => !knownAddresses.has(address)).slice(0, 10);
+  const router = tx.to ? normalizeAddress(tx.to) : "";
+  const poolTarget =
+    hasV4PoolManager
+      ? v4PoolManagerAddress
+      : endpointCandidates[0]?.address || nonTokenLogAddresses.find((address) => address !== router) || router;
+
+  return {
+    protocol: hasV4PoolManager ? "Uniswap v4 / PoolManager" : "非 v4 或未知池子",
+    poolManager: hasV4PoolManager ? v4PoolManagerAddress : "",
+    poolIdCandidates,
+    hookCandidates,
+    logAddressCandidates: nonTokenLogAddresses.slice(0, 12),
+    endpointCandidates,
+    poolTarget,
+    router
+  };
+}
+
+async function pickProbeHolder(token, primaryToken, transfers, overrideHolder) {
+  const candidateHolders = uniq([
+    overrideHolder,
+    primaryToken?.sampleHolder,
+    ...transfers.filter((transfer) => transfer.token === token).map((transfer) => transfer.to)
+  ].filter((address) => address && address !== zeroAddress && address !== v4PoolManagerAddress));
+
+  for (const holder of candidateHolders.slice(0, 8)) {
+    try {
+      const balance = await getTokenBalance(token, holder);
+      if (balance > 0n) return { holder, balance };
+    } catch {
+      // Try the next holder.
+    }
+  }
+  return { holder: candidateHolders[0] || "", balance: 0n };
+}
+
+function makeCallSummary(result, okText, failText) {
+  if (result.ok) {
+    const boolOk = isSuccessfulBoolReturn(result.result);
+    return boolOk ? okText : `${failText}：返回 false`;
+  }
+  return `${failText}：${result.error}`;
+}
+
+async function analyzeProbe(payload) {
+  const [tx, receipt] = await Promise.all([
+    ethRpc("eth_getTransactionByHash", [payload.txHash]),
+    ethRpc("eth_getTransactionReceipt", [payload.txHash])
+  ]);
+  if (!tx) throw new Error("RPC 没查到这笔交易");
+
+  const transfers = receipt?.logs?.map(parseTransferLog).filter(Boolean) || [];
+  const metaCache = new Map();
+  await Promise.all([...new Set(transfers.map((transfer) => transfer.token))].map((token) => getTokenMeta(token, metaCache)));
+
+  const fromAddress = normalizeAddress(tx.from);
+  const primaryToken = choosePrimaryToken(transfers, fromAddress, metaCache);
+  const pool = findPoolSignals(tx, receipt, transfers, primaryToken?.token || "");
+  const simulations = [];
+  const warnings = [];
+  const positives = [];
+
+  if (!primaryToken) {
+    warnings.push("没有从这笔交易日志里识别出非 WETH ERC20，可能不是 buy/mint 交易。");
+  }
+
+  const receivedTokens = transfers.filter(
+    (transfer) => primaryToken && transfer.token === primaryToken.token && transfer.to === fromAddress
+  );
+  const generatedBuy = primaryToken
+    ? buildGeneratedBuyTransaction(tx, {
+        walletAddress: fromAddress,
+        valueWei: hexToBigInt(tx.value || "0x0"),
+        forceMinOutZero: true,
+        slippageBps: slippageDenominator,
+        primaryReceivedToken: receivedTokens[0]
+          ? {
+              amountRaw: receivedTokens[0].amount.toString(),
+              decimals: primaryToken.decimals
+            }
+          : null
+      })
+    : null;
+
+  const buyCall = await tryEthCall({
+    from: fromAddress,
+    to: generatedBuy?.to || normalizeAddress(tx.to || zeroAddress),
+    value: tx.value || "0x0",
+    data: generatedBuy?.data || tx.input || "0x"
+  });
+  simulations.push({
+    label: "买入预检",
+    ok: buyCall.ok,
+    text: makeCallSummary(
+      buyCall,
+      generatedBuy ? "通过：按当前状态重放买入参数未 revert" : "通过：原始 calldata 重放未 revert",
+      generatedBuy ? "失败：当前状态下买入参数会 revert" : "失败：原始 calldata 当前会 revert"
+    )
+  });
+  if (buyCall.ok) positives.push("买入预检未 revert。");
+  else warnings.push("买入预检失败，可能是 deadline、余额、池子状态或 Hook 限制导致。");
+
+  let holderInfo = { holder: "", balance: 0n };
+  if (primaryToken) {
+    holderInfo = await pickProbeHolder(primaryToken.token, primaryToken, transfers, payload.holderAddress);
+  }
+
+  const probeAmount =
+    primaryToken && holderInfo.balance > 0n
+      ? holderInfo.balance > 10n ** BigInt(primaryToken.decimals) ? 10n ** BigInt(primaryToken.decimals) : holderInfo.balance
+      : 0n;
+
+  if (primaryToken && holderInfo.holder && probeAmount > 0n && pool.poolTarget) {
+    const approveTx = buildApproveTransaction(primaryToken.token, pool.router || pool.poolTarget, probeAmount, primaryToken);
+    const approveCall = await tryEthCall({
+      from: holderInfo.holder,
+      to: approveTx.to,
+      data: approveTx.data
+    });
+    simulations.push({
+      label: "授权预检",
+      ok: approveCall.ok && isSuccessfulBoolReturn(approveCall.result),
+      text: makeCallSummary(approveCall, "通过：approve 不会直接 revert", "失败：approve 会 revert")
+    });
+
+    const transferCall = await tryEthCall({
+      from: holderInfo.holder,
+      to: primaryToken.token,
+      data: encodeTransfer(pool.poolTarget, probeAmount)
+    });
+    const transferOk = transferCall.ok && isSuccessfulBoolReturn(transferCall.result);
+    simulations.push({
+      label: "卖出转账预检",
+      ok: transferOk,
+      text: makeCallSummary(
+        transferCall,
+        `通过：从持币地址转 ${formatUnits(probeAmount, primaryToken.decimals, 8)} ${primaryToken.symbol} 到池子/路由未 revert`,
+        "失败：代币转入池子/路由会 revert"
+      )
+    });
+    if (transferOk) positives.push("代币转入池子/路由预检未 revert。");
+    else warnings.push("卖出转账预检失败，这是强风险信号，但仍不能覆盖所有 Hook 内部限制。");
+  } else if (primaryToken) {
+    warnings.push("没有可用持币余额，无法做卖出方向的 transfer 预检；可以在持币地址里手动填一个有余额的钱包再测。");
+  }
+
+  if (pool.poolManager) {
+    warnings.push("该交易命中 Uniswap v4 PoolManager。v4 没有传统 LP 合约地址，池子由 PoolId 识别，Hook 可能在 swap 时执行额外限制。");
+  }
+  if (!pool.hookCandidates.length && pool.poolManager) {
+    warnings.push("没有从 calldata 里明确提取出 Hook 地址；可能是打包路由或 Hook 地址不在标准 32-byte address word 里。");
+  }
+
+  const risk =
+    simulations.some((item) => item.label.includes("卖出") && !item.ok) || simulations.some((item) => item.label === "授权预检" && !item.ok)
+      ? "high"
+      : warnings.length
+        ? "medium"
+        : "low";
+
+  return {
+    tx: {
+      hash: normalizeHex(tx.hash),
+      from: fromAddress,
+      to: tx.to ? normalizeAddress(tx.to) : "",
+      valueEth: formatUnits(hexToBigInt(tx.value || "0x0"), 18, 18),
+      selector: tx.input && tx.input !== "0x" ? normalizeHex(tx.input).slice(0, 10) : "0x",
+      blockNumber: tx.blockNumber ? Number(hexToBigInt(tx.blockNumber)) : null
+    },
+    primaryToken,
+    holder: holderInfo.holder,
+    holderBalance: primaryToken ? formatUnits(holderInfo.balance, primaryToken.decimals, 8) : "0",
+    probeAmount: primaryToken ? formatUnits(probeAmount, primaryToken.decimals, 8) : "0",
+    pool,
+    transfers: summarizeTransfers(transfers, metaCache),
+    simulations,
+    positives,
+    warnings,
+    risk
   };
 }
 
@@ -1252,6 +1595,82 @@ function renderResult(data) {
   setView("result");
 }
 
+function renderProbeResult(data) {
+  resultEl.innerHTML = "";
+  const riskText = data.risk === "high" ? "高风险" : data.risk === "medium" ? "需人工复核" : "低风险";
+  setProbeStatus(`检测完成：${riskText}`, data.risk === "high" ? "error" : "ok");
+
+  const summary = document.createElement("div");
+  summary.className = "summary-grid";
+  summary.append(
+    createMetric("风险结论", riskText),
+    createMetric("原交易", data.tx.hash),
+    createMetric("原交易 To", data.tx.to || "无"),
+    createMetric("方法", data.tx.selector),
+    createMetric("原 Value", `${data.tx.valueEth} ETH`),
+    createMetric("区块", data.tx.blockNumber ? String(data.tx.blockNumber) : "未知")
+  );
+  resultEl.append(createSection("检测结论", summary));
+
+  const tokenSummary = document.createElement("div");
+  tokenSummary.className = "summary-grid";
+  tokenSummary.append(
+    createMetric("识别代币", data.primaryToken ? `${data.primaryToken.symbol} / ${data.primaryToken.token}` : "未识别"),
+    createMetric("识别来源", data.primaryToken?.source || "无"),
+    createMetric("持币地址", data.holder || "未找到"),
+    createMetric("当前余额", data.primaryToken ? `${data.holderBalance} ${data.primaryToken.symbol}` : "0"),
+    createMetric("测试数量", data.primaryToken ? `${data.probeAmount} ${data.primaryToken.symbol}` : "0"),
+    createMetric("协议", data.pool.protocol)
+  );
+  resultEl.append(createSection("代币 / 持币", tokenSummary));
+
+  const poolSummary = document.createElement("div");
+  poolSummary.className = "summary-grid";
+  poolSummary.append(
+    createMetric("PoolManager", data.pool.poolManager || "未命中官方 v4 PoolManager"),
+    createMetric("LP / 池子目标", data.pool.poolTarget || "未识别"),
+    createMetric("Router", data.pool.router || "未识别"),
+    createMetric("PoolId 候选", data.pool.poolIdCandidates[0] || "无"),
+    createMetric("疑似 Hook", data.pool.hookCandidates[0] || "无"),
+    createMetric("日志池子候选", data.pool.logAddressCandidates[0] || "无")
+  );
+  resultEl.append(createSection("池子 / Hook", poolSummary));
+
+  if (data.simulations.length) {
+    resultEl.append(createSection("模拟结果", createList(data.simulations.map((item) => item.text), "token-list")));
+  }
+  if (data.pool.poolIdCandidates.length > 1) {
+    resultEl.append(createSection("PoolId 候选", createList(data.pool.poolIdCandidates, "token-list")));
+  }
+  if (data.pool.hookCandidates.length > 1) {
+    resultEl.append(createSection("疑似 Hook / 路由地址", createList(data.pool.hookCandidates, "token-list")));
+  }
+  if (data.pool.endpointCandidates.length) {
+    resultEl.append(createSection("资金交互地址", createList(data.pool.endpointCandidates.map((item) => item.text), "token-list")));
+  }
+  if (data.positives.length) {
+    resultEl.append(createSection("正向信号", createList(data.positives, "change-list")));
+  }
+  if (data.warnings.length) {
+    resultEl.append(createSection("风险提示", createList(data.warnings, "warning-list")));
+  }
+  if (data.transfers.length) {
+    resultEl.append(
+      createSection(
+        "转账样本",
+        createList(
+          data.transfers.map((transfer) => `${transfer.amount} ${transfer.symbol}: ${shortAddress(transfer.from)} -> ${shortAddress(transfer.to)} (${shortAddress(transfer.token)})`),
+          "token-list"
+        )
+      )
+    );
+  }
+
+  probeSubmitButton.disabled = false;
+  probeSubmitButton.textContent = "解析池子并预检";
+  setView("result");
+}
+
 function renderError(error, details) {
   resultEl.innerHTML = "";
   setFormStatus(error || "解析失败", "error");
@@ -1261,6 +1680,18 @@ function renderError(error, details) {
   resultEl.append(box);
   submitButton.disabled = false;
   submitButton.textContent = "解析并生成";
+  setView("result");
+}
+
+function renderProbeError(error, details) {
+  resultEl.innerHTML = "";
+  setProbeStatus(error || "检测失败", "error");
+  const box = document.createElement("div");
+  box.className = "error-box";
+  box.textContent = details ? `${error}: ${details}` : error;
+  resultEl.append(box);
+  probeSubmitButton.disabled = false;
+  probeSubmitButton.textContent = "解析池子并预检";
   setView("result");
 }
 
@@ -1303,6 +1734,35 @@ form.addEventListener("submit", async (event) => {
       return;
     }
     renderError("请求失败", err instanceof Error ? err.message : String(err));
+  }
+});
+
+probeForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const formData = new FormData(probeForm);
+  const txHash = extractTxHash(formData.get("probeTxHash"));
+  const holderAddress = extractAddress(formData.get("probeHolderAddress"));
+  const rawHolder = String(formData.get("probeHolderAddress") || "").trim();
+
+  if (!txHash) {
+    renderProbeError("交易哈希不完整", "请粘贴完整 buy/mint tx，或直接粘 Etherscan 交易链接。");
+    return;
+  }
+  if (rawHolder && !holderAddress) {
+    renderProbeError("持币地址不完整", "持币地址格式应该是 0x + 40 位十六进制。");
+    return;
+  }
+
+  probeSubmitButton.disabled = true;
+  probeSubmitButton.textContent = "检测中...";
+  setProbeStatus("正在读取交易日志、识别池子，并用 eth_call 做预检。");
+  setView("loading");
+
+  try {
+    const data = await analyzeProbe({ txHash, holderAddress });
+    renderProbeResult(data);
+  } catch (err) {
+    renderProbeError("检测失败", err instanceof Error ? err.message : String(err));
   }
 });
 
