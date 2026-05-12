@@ -17,7 +17,6 @@ leaving the ETH amount for manual entry. In sell mode, generated approval and sw
 transactions are shown as sender steps, and the approval is filled first.
 There is also a manual approval builder for generating an ERC20 `approve`
 transaction from a token address, spender/router address, amount, and decimals.
-The left rail is ordered as parser, approval builder, then sender.
 Parsed results include fill buttons that write the generated transaction into
 the hex sender fields.
 The wallet connect button lives in the top-right header.
@@ -26,8 +25,10 @@ The risk monitor accepts an early buy/mint transaction or a token contract.
 With a transaction it estimates visible buy/sell tax from transfer logs,
 identifies v4 PoolManager/PoolId candidates and possible Hook/router addresses,
 then uses `eth_call` to preflight current buy, approve, and token
-transfer-to-pool behavior. Contract-only mode is a basic scan; exact taxes need
-transaction logs or a forked simulation.
+transfer-to-pool behavior. Contract-only mode now also queries GoPlus,
+Honeypot.is, DexScreener pairs, and v4 PoolManager initialization logs so v4
+Hook pools are surfaced even when the ERC20 itself is plain. Exact taxes still
+need transaction logs or a forked simulation.
 
 The tools are separated behind a top navigation bar so only one form is visible
 at a time.

@@ -41,8 +41,30 @@ const v4PoolManagerAddress = "0x000000000004444c5dc75cb358380d2e3de08a90";
 const permit2Address = "0x000000000022d473030f116ddee9f6b43ac78ba3";
 const universalRouterAddress = "0x66a9893cc07d91d95644aedd05d03f95e1dba8af";
 const universalRouter211Address = "0x4c82d1fbfe28c977cbb58d8c7ff8fcf9f70a2cca";
+const v4InitializeTopic = "0xdd466e674ea557f56295e2d0218a125ea4b4f0f6f3307b95f85e6110838d6438";
+const v4SwapTopic = "0x40e9cecb9f5f1f1c5b9c97dec2917b7ee92e57ba5563708daca94dd84ad7112f";
+const goPlusTokenSecurityUrl = "https://api.gopluslabs.io/api/v1/token_security/1";
+const honeypotCheckUrl = "https://api.honeypot.is/v2/IsHoneypot";
+const dexScreenerTokenUrl = "https://api.dexscreener.com/latest/dex/tokens";
+const blockscoutContractUrl = "https://eth.blockscout.com/api/v2/smart-contracts";
 const slippageDenominator = 10000n;
 const maxUint256 = 2n ** 256n - 1n;
+const v4HookFlagDefinitions = [
+  { bit: 13, label: "beforeInitialize" },
+  { bit: 12, label: "afterInitialize" },
+  { bit: 11, label: "beforeAddLiquidity" },
+  { bit: 10, label: "afterAddLiquidity" },
+  { bit: 9, label: "beforeRemoveLiquidity" },
+  { bit: 8, label: "afterRemoveLiquidity" },
+  { bit: 7, label: "beforeSwap" },
+  { bit: 6, label: "afterSwap" },
+  { bit: 5, label: "beforeDonate" },
+  { bit: 4, label: "afterDonate" },
+  { bit: 3, label: "beforeSwapReturnsDelta" },
+  { bit: 2, label: "afterSwapReturnsDelta" },
+  { bit: 1, label: "afterAddLiquidityReturnsDelta" },
+  { bit: 0, label: "afterRemoveLiquidityReturnsDelta" }
+];
 const knownMethods = {
   "0x077587dd": "V4 hook/router custom ETH buy",
   "0x286d4c33": "V4 hook/router custom token sell",
@@ -557,6 +579,75 @@ async function tryEthCall(tx, blockTag = "latest") {
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
+}
+
+async function fetchJsonWithTimeout(url, timeoutMs = 12000) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) {
+      const message = payload?.error || payload?.message || `HTTP ${response.status}`;
+      throw new Error(message);
+    }
+    return payload;
+  } catch (err) {
+    if (err && err.name === "AbortError") throw new Error("第三方接口请求超时");
+    throw err;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function splitDataWords(data) {
+  const clean = strip0x(data || "");
+  const words = [];
+  for (let i = 0; i + 64 <= clean.length; i += 64) {
+    words.push(clean.slice(i, i + 64));
+  }
+  return words;
+}
+
+function signedWordToBigInt(word) {
+  const value = hexToBigInt(word);
+  return value >= 1n << 255n ? value - (1n << 256n) : value;
+}
+
+function topicToAddress(topic) {
+  const address = wordToAddress(topic);
+  return address === zeroAddress ? zeroAddress : normalizeAddress(address);
+}
+
+function formatPercentValue(value) {
+  if (value == null || value === "") return "未知";
+  const number = Number(value);
+  if (!Number.isFinite(number)) return String(value);
+  const percent = Math.abs(number) <= 1 ? number * 100 : number;
+  const text = percent.toFixed(4).replace(/\.?0+$/, "");
+  return `${text}%`;
+}
+
+function taxPercentNumber(value) {
+  if (value == null || value === "") return null;
+  const number = Number(value);
+  if (!Number.isFinite(number)) return null;
+  return Math.abs(number) <= 1 ? number * 100 : number;
+}
+
+function isRiskFlag(value) {
+  return value === true || value === 1 || value === "1" || String(value).toLowerCase() === "true";
+}
+
+function decodeV4HookFlags(hookAddress) {
+  const hook = normalizeAddress(hookAddress || zeroAddress);
+  if (hook === zeroAddress) return [];
+  const mask = BigInt(hook) & 0x3fffn;
+  return v4HookFlagDefinitions.filter((flag) => (mask & (1n << BigInt(flag.bit))) !== 0n).map((flag) => flag.label);
+}
+
+function hookFlagsText(flags) {
+  return flags?.length ? flags.join(", ") : "无";
 }
 
 function hexToUtf8(hexValue) {
@@ -1220,10 +1311,219 @@ function makeCallSummary(result, okText, failText) {
   return `${failText}：${result.error}`;
 }
 
+async function getGoPlusSecurity(token) {
+  const payload = await fetchJsonWithTimeout(`${goPlusTokenSecurityUrl}?contract_addresses=${token}`);
+  const result = payload?.result || {};
+  if (!result || typeof result !== "object") return null;
+  const key = Object.keys(result).find((item) => item.toLowerCase() === token.toLowerCase());
+  return key ? result[key] : null;
+}
+
+async function getHoneypotCheck(token) {
+  return fetchJsonWithTimeout(`${honeypotCheckUrl}?address=${token}&chainID=1`);
+}
+
+async function getDexScreenerPairs(token) {
+  const payload = await fetchJsonWithTimeout(`${dexScreenerTokenUrl}/${token}`);
+  const pairs = Array.isArray(payload?.pairs) ? payload.pairs : [];
+  return pairs
+    .filter((pair) => {
+      const chainId = String(pair.chainId || "").toLowerCase();
+      return chainId === "ethereum" || chainId === "eth" || chainId === "1";
+    })
+    .sort((a, b) => Number(b.liquidity?.usd || 0) - Number(a.liquidity?.usd || 0));
+}
+
+async function getBlockscoutContract(address) {
+  return fetchJsonWithTimeout(`${blockscoutContractUrl}/${address}`, 10000);
+}
+
+function parseV4InitializeLog(log) {
+  if (!log || normalizeAddress(log.address || zeroAddress) !== v4PoolManagerAddress) return null;
+  if (normalizeHex(log.topics?.[0] || "0x") !== v4InitializeTopic) return null;
+  const words = splitDataWords(log.data);
+  if (words.length < 5) return null;
+  const hook = wordToAddress(words[2]);
+  const hookFlags = decodeV4HookFlags(hook);
+  return {
+    poolId: normalizeHex(log.topics[1]),
+    currency0: topicToAddress(log.topics[2]),
+    currency1: topicToAddress(log.topics[3]),
+    fee: Number(hexToBigInt(words[0])),
+    tickSpacing: Number(signedWordToBigInt(words[1])),
+    hook,
+    hookFlags,
+    sqrtPriceX96: hexToBigInt(words[3]).toString(),
+    tick: Number(signedWordToBigInt(words[4])),
+    blockNumber: log.blockNumber ? Number(hexToBigInt(log.blockNumber)) : null,
+    transactionHash: log.transactionHash ? normalizeHex(log.transactionHash) : ""
+  };
+}
+
+async function getV4PoolInitialization(poolId) {
+  const latest = Number(hexToBigInt(await ethRpc("eth_blockNumber", [])));
+  const fromBlock = Math.max(0, latest - 49999);
+  const logs = await ethRpc("eth_getLogs", [
+    {
+      fromBlock: `0x${fromBlock.toString(16)}`,
+      toBlock: "latest",
+      address: v4PoolManagerAddress,
+      topics: [v4InitializeTopic, normalizeHex(poolId)]
+    }
+  ]);
+  return parseV4InitializeLog(logs?.[0]);
+}
+
+function median(values) {
+  if (!values.length) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+}
+
+function classifyV4Swap(log, poolInit, token) {
+  const words = splitDataWords(log.data);
+  if (words.length < 2 || !poolInit) return null;
+  const amount0 = signedWordToBigInt(words[0]);
+  const amount1 = signedWordToBigInt(words[1]);
+  const tokenIsCurrency0 = normalizeAddress(poolInit.currency0) === token;
+  const tokenIsCurrency1 = normalizeAddress(poolInit.currency1) === token;
+  if (!tokenIsCurrency0 && !tokenIsCurrency1) return null;
+  const tokenAmount = tokenIsCurrency0 ? amount0 : amount1;
+  const pairedAmount = tokenIsCurrency0 ? amount1 : amount0;
+  if (tokenAmount === 0n || pairedAmount === 0n) return null;
+  const type = tokenAmount > 0n ? "buy" : "sell";
+  const price = Number(pairedAmount < 0n ? -pairedAmount : pairedAmount) / Number(tokenAmount < 0n ? -tokenAmount : tokenAmount);
+  return Number.isFinite(price) ? { type, price } : { type, price: null };
+}
+
+async function getV4SwapStats(poolId, poolInit, token) {
+  const latest = Number(hexToBigInt(await ethRpc("eth_blockNumber", [])));
+  const fromBlock = Math.max(0, latest - 2000);
+  const logs = await ethRpc("eth_getLogs", [
+    {
+      fromBlock: `0x${fromBlock.toString(16)}`,
+      toBlock: "latest",
+      address: v4PoolManagerAddress,
+      topics: [v4SwapTopic, normalizeHex(poolId)]
+    }
+  ]);
+  const buys = [];
+  const sells = [];
+  for (const log of logs || []) {
+    const classified = classifyV4Swap(log, poolInit, token);
+    if (!classified) continue;
+    if (classified.type === "buy") buys.push(classified.price);
+    if (classified.type === "sell") sells.push(classified.price);
+  }
+  const buyMedian = median(buys.filter((value) => value != null));
+  const sellMedian = median(sells.filter((value) => value != null));
+  return {
+    buys: buys.length,
+    sells: sells.length,
+    buyMedian,
+    sellMedian,
+    sellToBuyRatio: buyMedian && sellMedian ? sellMedian / buyMedian : null,
+    fromBlock,
+    toBlock: latest
+  };
+}
+
+function summarizeDexPair(pair) {
+  const labels = Array.isArray(pair.labels) && pair.labels.length ? `/${pair.labels.join(",")}` : "";
+  const quote = pair.quoteToken?.symbol || "QUOTE";
+  const liquidity = pair.liquidity?.usd != null ? `$${Number(pair.liquidity.usd).toLocaleString("en-US", { maximumFractionDigits: 0 })}` : "未知流动性";
+  return `${pair.dexId || "dex"}${labels} ${quote} 池：${pair.pairAddress}，流动性 ${liquidity}`;
+}
+
+function applyGoPlusFindings(security, warnings, positives) {
+  if (!security) {
+    warnings.push("GoPlus 没有返回该合约的完整风险数据。");
+    return { buyTax: "未知", sellTax: "未知", notes: ["GoPlus 未返回税率字段。"], highRisk: false };
+  }
+
+  const buyTax = formatPercentValue(security.buy_tax);
+  const sellTax = formatPercentValue(security.sell_tax);
+  const notes = ["GoPlus Token Security 已查询。"];
+  let highRisk = false;
+
+  const riskMap = [
+    ["is_honeypot", "GoPlus 标记：疑似无法正常卖出。", true],
+    ["cannot_buy", "GoPlus 标记：可能无法买入。", true],
+    ["cannot_sell_all", "GoPlus 标记：可能无法全部卖出。", true],
+    ["is_blacklisted", "GoPlus 标记：存在黑名单逻辑。", true],
+    ["is_whitelisted", "GoPlus 标记：存在白名单逻辑。", true],
+    ["slippage_modifiable", "GoPlus 标记：滑点/税率可被修改。", true],
+    ["personal_slippage_modifiable", "GoPlus 标记：可针对地址设置单独滑点/税率。", true],
+    ["trading_cooldown", "GoPlus 标记：存在交易冷却限制。", false],
+    ["transfer_pausable", "GoPlus 标记：转账可暂停。", true],
+    ["owner_change_balance", "GoPlus 标记：Owner 可改余额。", true],
+    ["hidden_owner", "GoPlus 标记：疑似隐藏 owner。", true],
+    ["can_take_back_ownership", "GoPlus 标记：可重新取回 owner 权限。", true]
+  ];
+
+  for (const [field, message, severe] of riskMap) {
+    if (isRiskFlag(security[field])) {
+      warnings.push(message);
+      if (severe) highRisk = true;
+    }
+  }
+
+  const sellTaxPercent = taxPercentNumber(security.sell_tax);
+  const buyTaxPercent = taxPercentNumber(security.buy_tax);
+  if (sellTaxPercent != null && sellTaxPercent >= 50) {
+    warnings.push(`GoPlus 卖税 ${sellTax}，按高风险处理。`);
+    highRisk = true;
+  }
+  if (buyTaxPercent != null && buyTaxPercent >= 50) {
+    warnings.push(`GoPlus 买税 ${buyTax}，按高风险处理。`);
+    highRisk = true;
+  }
+  if (!highRisk && isRiskFlag(security.is_honeypot) === false) {
+    positives.push("GoPlus 未标记为貔貅。");
+  }
+
+  return {
+    buyTax,
+    sellTax,
+    notes,
+    highRisk
+  };
+}
+
+function applyHoneypotFindings(check, warnings, positives) {
+  if (!check) return { buyTax: "未知", sellTax: "未知", notes: ["Honeypot.is 未返回可用模拟结果。"], highRisk: false };
+  const buyTax = formatPercentValue(check.simulationResult?.buyTax);
+  const sellTax = formatPercentValue(check.simulationResult?.sellTax);
+  const notes = ["Honeypot.is 已查询。"];
+  let highRisk = false;
+
+  if (check.honeypotResult?.isHoneypot) {
+    warnings.push("Honeypot.is 标记：疑似貔貅。");
+    highRisk = true;
+  } else if (check.simulationSuccess) {
+    positives.push("Honeypot.is 买卖模拟成功。");
+  }
+
+  const sellTaxPercent = taxPercentNumber(check.simulationResult?.sellTax);
+  const buyTaxPercent = taxPercentNumber(check.simulationResult?.buyTax);
+  if (sellTaxPercent != null && sellTaxPercent >= 50) {
+    warnings.push(`Honeypot.is 卖税 ${sellTax}，按高风险处理。`);
+    highRisk = true;
+  }
+  if (buyTaxPercent != null && buyTaxPercent >= 50) {
+    warnings.push(`Honeypot.is 买税 ${buyTax}，按高风险处理。`);
+    highRisk = true;
+  }
+
+  return { buyTax, sellTax, notes, highRisk };
+}
+
 async function analyzeTokenOnly(tokenAddress, holderAddress = "") {
   const token = normalizeAddress(tokenAddress);
   const metaCache = new Map();
   const meta = await getTokenMeta(token, metaCache);
+  const externalChecks = [];
   const [code, totalSupplyResult] = await Promise.allSettled([
     ethRpc("eth_getCode", [token, "latest"]),
     getTotalSupply(token)
@@ -1231,6 +1531,23 @@ async function analyzeTokenOnly(tokenAddress, holderAddress = "") {
   const warnings = [];
   const positives = [];
   const simulations = [];
+  let highRisk = false;
+  let pool = {
+    protocol: "仅合约检测",
+    poolManager: "",
+    poolIdCandidates: [],
+    hookCandidates: [],
+    hookFlags: [],
+    logAddressCandidates: [],
+    endpointCandidates: [],
+    poolTarget: "",
+    router: ""
+  };
+  let taxEstimates = {
+    buyTax: "需要最早买入 tx 日志或模拟接口",
+    sellTax: "需要成功卖出 tx / fork 模拟 / 第三方模拟",
+    notes: ["只输合约时，工具会尽量用第三方接口和 v4 池子日志补充；精确税率仍以真实模拟为准。"]
+  };
 
   if (code.status !== "fulfilled" || !code.value || code.value === "0x") {
     warnings.push("这个地址当前没有合约代码，可能不是 ERC20 合约。");
@@ -1257,12 +1574,144 @@ async function analyzeTokenOnly(tokenAddress, holderAddress = "") {
     }
   }
 
-  warnings.push("仅输入代币合约不能知道具体池子/Hook，也不能精确估算买卖税；建议输入最早买入 tx。");
-  const taxEstimates = {
-    buyTax: "需要最早买入 tx 日志",
-    sellTax: "需要成功卖出 tx 或 fork 模拟",
-    notes: ["仅凭合约地址无法精确计算买卖税。"]
-  };
+  const [goPlusResult, honeypotResult, dexResult] = await Promise.allSettled([
+    getGoPlusSecurity(token),
+    getHoneypotCheck(token),
+    getDexScreenerPairs(token)
+  ]);
+
+  if (goPlusResult.status === "fulfilled") {
+    const security = goPlusResult.value;
+    if (security?.token_symbol && !meta.symbol) meta.symbol = security.token_symbol;
+    if (security?.token_name && !meta.name) meta.name = security.token_name;
+    const goPlus = applyGoPlusFindings(security, warnings, positives);
+    externalChecks.push("GoPlus Token Security：已查询");
+    highRisk ||= goPlus.highRisk;
+    if (goPlus.buyTax !== "未知" || goPlus.sellTax !== "未知") {
+      taxEstimates = {
+        buyTax: goPlus.buyTax === "未知" ? taxEstimates.buyTax : `${goPlus.buyTax}（GoPlus）`,
+        sellTax: goPlus.sellTax === "未知" ? taxEstimates.sellTax : `${goPlus.sellTax}（GoPlus）`,
+        notes: [...taxEstimates.notes, ...goPlus.notes]
+      };
+    }
+  } else {
+    warnings.push(`GoPlus 查询失败：${goPlusResult.reason?.message || String(goPlusResult.reason)}`);
+  }
+
+  if (honeypotResult.status === "fulfilled") {
+    const honeypot = applyHoneypotFindings(honeypotResult.value, warnings, positives);
+    externalChecks.push("Honeypot.is：已查询");
+    highRisk ||= honeypot.highRisk;
+    if (honeypot.buyTax !== "未知" || honeypot.sellTax !== "未知") {
+      taxEstimates = {
+        buyTax: honeypot.buyTax === "未知" ? taxEstimates.buyTax : `${honeypot.buyTax}（Honeypot.is）`,
+        sellTax: honeypot.sellTax === "未知" ? taxEstimates.sellTax : `${honeypot.sellTax}（Honeypot.is）`,
+        notes: [...taxEstimates.notes, ...honeypot.notes]
+      };
+    }
+  } else {
+    externalChecks.push(`Honeypot.is：${honeypotResult.reason?.message || "未找到可模拟池子"}`);
+  }
+
+  if (dexResult.status === "fulfilled" && dexResult.value.length) {
+    const pairs = dexResult.value;
+    const topPair = pairs[0];
+    const v4Pairs = pairs.filter((pair) => {
+      const labels = Array.isArray(pair.labels) ? pair.labels.map((label) => String(label).toLowerCase()) : [];
+      return labels.includes("v4") || String(pair.pairAddress || "").length === 66;
+    });
+
+    externalChecks.push(`DexScreener：找到 ${pairs.length} 个 Ethereum 池，主池 ${summarizeDexPair(topPair)}`);
+    pool = {
+      ...pool,
+      protocol: v4Pairs.length ? "Uniswap v4 / DexScreener + PoolManager" : `${topPair.dexId || "DEX"} 池`,
+      poolManager: v4Pairs.length ? v4PoolManagerAddress : "",
+      poolIdCandidates: v4Pairs.map((pair) => normalizeHex(pair.pairAddress)).slice(0, 8),
+      logAddressCandidates: pairs.map((pair) => normalizeHex(pair.pairAddress)).slice(0, 8),
+      poolTarget: v4Pairs[0]?.pairAddress ? normalizeHex(v4Pairs[0].pairAddress) : normalizeHex(topPair.pairAddress),
+      router: v4Pairs.length ? universalRouterAddress : ""
+    };
+
+    if (v4Pairs.length) {
+      const v4Pair = v4Pairs[0];
+      warnings.push("DexScreener 显示主池是 Uniswap v4。v4 的税和限制常在 Hook 里，普通 ERC20 扫描会漏掉。");
+      try {
+        const poolInit = await getV4PoolInitialization(v4Pair.pairAddress);
+        if (poolInit) {
+          const hasHook = poolInit.hook && poolInit.hook !== zeroAddress;
+          pool = {
+            ...pool,
+            poolTarget: poolInit.poolId,
+            hookCandidates: hasHook ? [poolInit.hook] : [],
+            hookFlags: poolInit.hookFlags,
+            v4Pool: poolInit
+          };
+          externalChecks.push(
+            `PoolManager 初始化：fee ${poolInit.fee}，tickSpacing ${poolInit.tickSpacing}，Hook ${hasHook ? poolInit.hook : "无"}`
+          );
+
+          if (hasHook) {
+            const hookFlagText = hookFlagsText(poolInit.hookFlags);
+            warnings.push(`该 v4 池配置 Hook：${poolInit.hook}（${hookFlagText}）。`);
+            const swapHookFlags = ["beforeSwap", "afterSwap", "beforeSwapReturnsDelta", "afterSwapReturnsDelta"];
+            if (poolInit.hookFlags.some((flag) => swapHookFlags.includes(flag))) {
+              warnings.push("Hook 会在 swap 阶段执行或返回 delta，可在买卖时动态改账/扣税；按高风险处理。");
+              highRisk = true;
+            }
+
+            const hookCode = await ethRpc("eth_getCode", [poolInit.hook, "latest"]).catch(() => "0x");
+            if (hookCode && hookCode !== "0x") {
+              warnings.push("Hook 合约有代码，卖出路径必须按 Hook 逻辑复核。");
+            }
+
+            try {
+              const contractInfo = await getBlockscoutContract(poolInit.hook);
+              if (contractInfo?.source_code || contractInfo?.file_path || contractInfo?.name) {
+                positives.push("Hook 在 Blockscout 有源码信息。");
+              } else {
+                warnings.push("Blockscout 未返回 Hook 源码信息，无法直接审计 Hook 逻辑。");
+              }
+            } catch {
+              warnings.push("Hook 源码状态查询失败，按未知 Hook 处理。");
+            }
+          } else {
+            positives.push("v4 PoolKey 未配置 Hook。");
+          }
+
+          try {
+            const swapStats = await getV4SwapStats(poolInit.poolId, poolInit, token);
+            const ratioText =
+              swapStats.sellToBuyRatio == null ? "不足以比较" : `${swapStats.sellToBuyRatio.toFixed(4).replace(/\.?0+$/, "")}x`;
+            externalChecks.push(`最近 ${swapStats.toBlock - swapStats.fromBlock} 个区块 v4 Swap：买 ${swapStats.buys} / 卖 ${swapStats.sells}，卖/买中位价格 ${ratioText}`);
+            if (swapStats.buys >= 3 && swapStats.sells === 0) {
+              warnings.push("近期只有买入没有卖出，疑似无法卖出或卖出门槛很高。");
+              highRisk = true;
+            }
+            if (swapStats.sellToBuyRatio != null && swapStats.sellToBuyRatio < 0.1) {
+              warnings.push("近期卖出成交价格显著低于买入价格，可能存在高卖税或 Hook 扣减。");
+              highRisk = true;
+            }
+          } catch (err) {
+            externalChecks.push(`v4 Swap 日志统计失败：${err instanceof Error ? err.message : String(err)}`);
+          }
+        } else {
+          warnings.push("未在最近 50000 个区块找到该 v4 PoolId 的 Initialize 日志，Hook 未能解出。");
+        }
+      } catch (err) {
+        warnings.push(`v4 PoolManager 回查失败：${err instanceof Error ? err.message : String(err)}`);
+      }
+    } else {
+      positives.push("DexScreener 找到普通 DEX 池。");
+    }
+  } else if (dexResult.status === "fulfilled") {
+    warnings.push("DexScreener 没有找到该代币的 Ethereum 池子。");
+  } else {
+    warnings.push(`DexScreener 查询失败：${dexResult.reason?.message || String(dexResult.reason)}`);
+  }
+
+  if (!highRisk) {
+    warnings.push("合约地址模式不是完整 fork 卖出模拟；遇到 v4 Hook、黑白名单或按地址限卖时，仍要用最早买入 tx / 成功卖出 tx 复核。");
+  }
 
   return {
     tx: {
@@ -1284,22 +1733,14 @@ async function analyzeTokenOnly(tokenAddress, holderAddress = "") {
     holder,
     holderBalance: formatUnits(holderBalance, meta.decimals ?? 18, 8),
     probeAmount: "0",
-    pool: {
-      protocol: "仅合约检测",
-      poolManager: "",
-      poolIdCandidates: [],
-      hookCandidates: [],
-      logAddressCandidates: [],
-      endpointCandidates: [],
-      poolTarget: "",
-      router: ""
-    },
+    pool,
     transfers: [],
     simulations,
+    externalChecks,
     positives,
     warnings,
     taxEstimates,
-    risk: warnings.length ? "medium" : "low"
+    risk: highRisk ? "high" : warnings.length ? "medium" : "low"
   };
 }
 
@@ -1823,10 +2264,14 @@ function renderProbeResult(data) {
     createMetric("Router", data.pool.router || "未识别"),
     createMetric("PoolId 候选", data.pool.poolIdCandidates[0] || "无"),
     createMetric("疑似 Hook", data.pool.hookCandidates[0] || "无"),
+    createMetric("Hook 权限", hookFlagsText(data.pool.hookFlags || [])),
     createMetric("日志池子候选", data.pool.logAddressCandidates[0] || "无")
   );
   resultEl.append(createSection("池子 / Hook", poolSummary));
 
+  if (data.externalChecks?.length) {
+    resultEl.append(createSection("外部 / 链上补充", createList(data.externalChecks, "token-list")));
+  }
   if (data.simulations.length) {
     resultEl.append(createSection("模拟结果", createList(data.simulations.map((item) => item.text), "token-list")));
   }

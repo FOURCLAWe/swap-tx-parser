@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Swap Tx Parser</title>
-    <link rel="stylesheet" href="./styles.css?v=15" />
+    <link rel="stylesheet" href="./styles.css?v=16" />
   </head>
   <body>
     <main class="shell">
@@ -60,8 +60,8 @@
             </label>
 
             <button class="primary-btn" type="submit">检测风险</button>
-            <p class="form-status" id="probe-status">输入最早买入 tx 可估买税并识别池子；只输入合约会做基础风险扫描。</p>
-            <p class="mini-note">卖税需要卖出日志或 fork 才能精确估算；这里会标注日志估算和当前预检结果。</p>
+            <p class="form-status" id="probe-status">输入最早买入 tx 可估买税；只输入合约会查 GoPlus、Honeypot、DexScreener 和 v4 Hook。</p>
+            <p class="mini-note">卖税最稳还是 fork 模拟或成功卖出日志；v4 Hook 会单独标成风险信号。</p>
           </form>
 
           <form class="panel form-panel tool-panel" id="analyze-form" data-tool-panel="parser" hidden>
@@ -226,6 +226,6 @@
       </div>
     </template>
 
-    <script src="./app.js?v=15" type="module"></script>
+    <script src="./app.js?v=16" type="module"></script>
   </body>
 </html>
